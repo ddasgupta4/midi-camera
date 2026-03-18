@@ -125,15 +125,17 @@ def interpret_right_hand(hand: HandData) -> RightHandGesture:
         # Thumb only = VI
         degree = 6
     elif thumb_up and finger_count == 1 and extended[3]:
-        # Thumb + pinky = VII
+        # Thumb + pinky only = VII
         degree = 7
+    elif thumb_up and finger_count == 4:
+        # All 4 fingers + thumb = V
+        degree = 5
     elif thumb_up and finger_count >= 1:
-        # Thumb + fingers: use finger count for degree
-        # (but if it's just thumb+pinky, that's VII above)
-        degree = min(finger_count, 5)
+        # Thumb + some fingers — use non-thumb finger count (I-IV)
+        degree = min(finger_count, 4)
     else:
-        # Just fingers, no thumb
-        degree = min(finger_count, 5)
+        # Just fingers, no thumb — I through IV
+        degree = min(finger_count, 4)
 
     return RightHandGesture(
         degree=degree,

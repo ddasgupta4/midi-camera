@@ -123,10 +123,19 @@ def run_camera(config: dict):
         if debounce_met:
             current_degree = current_chord['degree'] if current_chord else 0
 
-            # Check if chord actually changed
+            # Resolve what the pending quality would actually be
+            if pending_degree >= 1:
+                pending_resolved_quality = (
+                    pending_quality or engine.diatonic_qualities[pending_degree - 1]
+                )
+            else:
+                pending_resolved_quality = None
+
+            # Check if chord actually changed (compare resolved qualities to avoid
+            # false triggers when removing a modifier that matched the diatonic default)
             chord_changed = (
                 pending_degree != current_degree
-                or (current_chord and pending_quality != current_chord.get('quality'))
+                or (current_chord and pending_resolved_quality != current_chord.get('quality'))
                 or (current_chord and pending_add_7th != current_chord.get('_add_7th', False))
                 or (current_chord and pending_add_9th != current_chord.get('_add_9th', False))
             )
