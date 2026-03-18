@@ -1,238 +1,339 @@
 """
 MIDI Camera — Hand Gesture MIDI Controller
-
-Main entry point. Shows config screen, then runs the camera loop
-with hand tracking, gesture interpretation, chord output, and overlay.
 """
 
-import sys
 import time
 import cv2
 
 from core.hand_tracker import HandTracker
-from core.gesture import interpret_right_hand, interpret_left_hand, LeftHandGesture
+from core.face_tracker import FaceTracker
+from core.gesture import interpret_right_hand, interpret_left_hand, LeftHandGesture, reset_gesture_state
 from core.chord_engine import ChordEngine
 from core.midi_output import MidiOutput
-from ui.overlay import draw_chord_card, draw_status, draw_controls_hint
-from ui.config_screen import show_config_screen
+from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
+                         draw_sauce_banner, draw_help_overlay, draw_voicing_panel,
+                         draw_latency_slider)
 
 
-# Debounce: chord must be held this long before triggering (seconds)
-DEBOUNCE_TIME = 0.35
-
-# Target FPS for camera loop
+DEBOUNCE_MIN  = 0.05   # 50ms  — yolo
+DEBOUNCE_MAX  = 0.40   # 400ms — fort knox
+DEBOUNCE_DEFAULT = 0.15
 TARGET_FPS = 30
+ALL_KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+# Piano keyboard layout (following standard computer-keyboard piano mapping)
+# Middle row: A=C  S=D  D=E  F=F  G=G  H=A  J=B  K=C  L=D
+# Top row:    W=C# E=D# T=F# Y=G# U=A#
+KEY_MAP = {
+    ord('a'): 'C',  ord('s'): 'D',  ord('d'): 'E',  ord('f'): 'F',
+    ord('g'): 'G',  ord('h'): 'A',  ord('j'): 'B',  ord('k'): 'C',
+    ord('w'): 'C#', ord('e'): 'D#', ord('t'): 'F#', ord('y'): 'G#',
+    ord('u'): 'A#',
+}
+
+
+class VoicingEditor:
+    """Manages per-degree voicing customization (inversion + note offsets)."""
+
+    def __init__(self):
+        # Per degree (1-7): inversion index (0=root, 1=1st, 2=2nd, 3=3rd)
+        self.inversions = {d: 0 for d in range(1, 8)}
+        # Per degree: per-note semitone offsets (list, indexed by note position)
+        self.note_offsets = {d: {} for d in range(1, 8)}
+
+        # Panel state
+        self.selected_degree = 1
+        self.selected_note = 0
+
+    def apply(self, notes: list, degree: int) -> list:
+        """Apply inversion and offsets to a note list."""
+        if not notes:
+            return notes
+        result = list(notes)
+
+        # Apply note offsets
+        offsets = self.note_offsets.get(degree, {})
+        for i, offset in offsets.items():
+            if i < len(result):
+                result[i] += offset
+
+        # Apply inversion: move bottom note(s) up an octave
+        inv = self.inversions.get(degree, 0) % max(1, len(result))
+        for _ in range(inv):
+            result.sort()
+            result[0] += 12
+        result.sort()
+        return result
+
+    def invert(self, degree: int, direction: int = 1):
+        """Cycle inversion up or down."""
+        current = self.inversions[degree]
+        self.inversions[degree] = (current + direction) % 4
+
+    def nudge_note(self, degree: int, note_idx: int, semitones: int):
+        """Move a specific note by semitones."""
+        offsets = self.note_offsets.setdefault(degree, {})
+        offsets[note_idx] = offsets.get(note_idx, 0) + semitones
+
+    def reset_degree(self, degree: int):
+        self.inversions[degree] = 0
+        self.note_offsets[degree] = {}
+
+
+def _handle_shortcut(key: int, engine, midi, voicing_editor=None, voicing_panel_open=False) -> bool:
+    """Handle keyboard shortcuts. Returns True if key/octave changed."""
+
+    # Z/X = octave down/up
+    if key == ord('z'):
+        if engine.octave > 1:
+            engine.octave -= 1
+            return True
+    elif key == ord('x'):
+        if engine.octave < 6:
+            engine.octave += 1
+            return True
+
+    # Piano keyboard layout for key selection
+    elif key in KEY_MAP:
+        engine.set_key(KEY_MAP[key])
+        return True
+
+    # Arrow keys for key shift when voicing panel NOT open
+    elif not voicing_panel_open:
+        if key == 3:  # RIGHT arrow
+            idx = ALL_KEYS.index(engine.key)
+            engine.set_key(ALL_KEYS[(idx + 1) % 12])
+            return True
+        elif key == 2:  # LEFT arrow
+            idx = ALL_KEYS.index(engine.key)
+            engine.set_key(ALL_KEYS[(idx - 1) % 12])
+            return True
+
+    # M = toggle major/minor
+    if key == ord('m'):
+        engine.set_mode('minor' if engine.mode == 'major' else 'major')
+        return True
+
+    return False
+
+
+def _handle_voicing_key(key: int, ve: VoicingEditor, engine, sauce_mode: bool) -> bool:
+    """Handle keypresses inside the voicing panel. Returns True if state changed."""
+    d = ve.selected_degree
+    n = ve.selected_note
+
+    if key == 3:  # RIGHT — next degree
+        ve.selected_degree = min(7, d + 1)
+        ve.selected_note = 0
+        return True
+    elif key == 2:  # LEFT — prev degree
+        ve.selected_degree = max(1, d - 1)
+        ve.selected_note = 0
+        return True
+    elif key == 0:  # UP — nudge selected note up
+        ve.nudge_note(d, n, 1)
+        return True
+    elif key == 1:  # DOWN — nudge selected note down
+        ve.nudge_note(d, n, -1)
+        return True
+    elif key == ord('i'):  # I = invert up
+        ve.invert(d, 1)
+        return True
+    elif key == ord('u'):  # U = invert down
+        ve.invert(d, -1)
+        return True
+    elif key == ord('r'):  # R = reset selected degree
+        ve.reset_degree(d)
+        return True
+    elif key == ord('n'):  # N = next note in chord
+        # Get chord to know how many notes
+        try:
+            if sauce_mode:
+                info = engine.build_sauce_chord(d)
+            else:
+                info = engine.build_chord(degree=d)
+            max_n = len(info['notes']) - 1
+            ve.selected_note = (n + 1) % (max_n + 1)
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def run_camera(config: dict):
-    """Main camera loop."""
-    # Init components
-    engine = ChordEngine(
-        key=config['key'],
-        mode=config['mode'],
-        octave=config['octave'],
-    )
+    engine = ChordEngine(key=config['key'], mode=config['mode'], octave=config['octave'])
     midi = MidiOutput(port_name="MIDI Camera", channel=config['channel'])
     tracker = HandTracker()
+    ve = VoicingEditor()
 
-    # Open MIDI port
+    try:
+        face = FaceTracker()
+        print("[*] Face tracker loaded (tongue = sauce mode)")
+    except FileNotFoundError as e:
+        print(f"[!] Face tracker unavailable: {e}")
+        face = None
+
     midi_ok = midi.open()
     if not midi_ok:
-        print("[!] Could not open MIDI port. Continuing without MIDI output.")
+        print("[!] Could not open MIDI port.")
 
-    # Open camera
     cap = cv2.VideoCapture(config['camera'])
     if not cap.isOpened():
         print(f"[!] Could not open camera {config['camera']}")
-        midi.close()
-        tracker.release()
-        return 'quit'
+        midi.close(); tracker.release(); return 'quit'
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-    # Create window explicitly so it renders properly
     cv2.namedWindow("MIDI Camera", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("MIDI Camera", 960, 720)
 
-    # State tracking
-    current_chord = None       # Currently sounding chord info dict
-    pending_degree = 0         # Degree being held (waiting for debounce)
-    pending_since = 0.0        # When the pending degree was first seen
-    pending_quality = None
-    pending_add_7th = False
-    pending_add_9th = False
+    current_chord = None
+    pending_degree = 0
+    pending_since = 0.0
     last_velocity = 80
     left_gesture_name = ""
-    last_quality_change = 0.0     # timestamp of last quality change
-    QUALITY_DEBOUNCE = 0.4        # seconds before quality change retriggers chord
+    sauce_mode = False
+    show_help = False
+    show_voicings = False
+    show_latency = False
+    debounce_time = DEBOUNCE_DEFAULT
 
-    # Default left hand state when no left hand detected
     default_left = LeftHandGesture(
-        quality_override=None, velocity=80,
-        add_7th=False, add_9th=False, gesture_name="no hand"
+        flip_quality=False, velocity=80, add_7th=False,
+        add_9th=False, add_11th=False, add_13th=False, gesture_name="no hand"
     )
 
     frame_time = 1.0 / TARGET_FPS
-
     print(f"[*] MIDI Camera running — Key: {engine.get_key_display()} {engine.get_mode_display()}")
     print(f"[*] MIDI port: {'MIDI Camera' if midi_ok else 'NOT CONNECTED'}")
-    print("[*] Press Q to quit, ESC to return to config")
+    print("[*] Press H for help, V for voicings, Q to quit")
 
     while True:
         t_start = time.time()
-
         ret, frame = cap.read()
-        if not ret:
-            break
+        if not ret: break
 
-        # Mirror the frame (selfie mode)
         frame = cv2.flip(frame, 1)
 
-        # Track hands
         left_hand, right_hand = tracker.process(frame)
+        if face:
+            sauce_mode = face.process(frame)
 
-        # Draw hand landmarks
         if right_hand:
             tracker.draw_landmarks(frame, right_hand, color=(0, 255, 100))
         if left_hand:
             tracker.draw_landmarks(frame, left_hand, color=(255, 180, 0))
 
-        # Interpret gestures
         right_gesture = interpret_right_hand(right_hand) if right_hand else None
-        left_gesture = interpret_left_hand(left_hand) if left_hand else default_left
+        left_gesture  = interpret_left_hand(left_hand)  if left_hand  else default_left
 
         last_velocity = left_gesture.velocity
-        left_gesture_name = left_gesture.gesture_name
+        left_gesture_name = "~SAUCE~" if sauce_mode else left_gesture.gesture_name
 
-        # Determine target degree from right hand
         target_degree = right_gesture.degree if right_gesture else 0
-
-        # Debounce logic: new degree must be held for DEBOUNCE_TIME
         now = time.time()
         if target_degree != pending_degree:
-            # Degree changed — start new debounce timer
             pending_degree = target_degree
             pending_since = now
-            pending_quality = left_gesture.quality_override
-            pending_add_7th = left_gesture.add_7th
-            pending_add_9th = left_gesture.add_9th
-        else:
-            # Same degree still held — update modifiers in real time
-            pending_quality = left_gesture.quality_override
-            pending_add_7th = left_gesture.add_7th
-            pending_add_9th = left_gesture.add_9th
 
-        # Check if debounce has elapsed
-        debounce_met = (now - pending_since) >= DEBOUNCE_TIME
-
-        if debounce_met:
-            current_degree = current_chord['degree'] if current_chord else 0
-
-            # Resolve what the pending quality would actually be
-            if pending_degree >= 1:
-                pending_resolved_quality = (
-                    pending_quality or engine.diatonic_qualities[pending_degree - 1]
-                )
-            else:
-                pending_resolved_quality = None
-
-            # Check if chord degree changed
-            degree_changed = (pending_degree != current_degree)
-
-            # Check if quality/extensions changed (with separate debounce)
-            quality_changed = (
-                (current_chord and pending_resolved_quality != current_chord.get('quality'))
-                or (current_chord and pending_add_7th != current_chord.get('_add_7th', False))
-                or (current_chord and pending_add_9th != current_chord.get('_add_9th', False))
-            )
-
-            # Quality changes need their own debounce to prevent flutter
-            quality_debounce_met = (now - last_quality_change) >= QUALITY_DEBOUNCE
-            chord_changed = degree_changed or (quality_changed and quality_debounce_met)
-
-            if chord_changed:
-                if pending_degree == 0:
-                    # Silence — note off
+        if (now - pending_since) >= debounce_time:
+            if pending_degree == 0:
+                if current_chord is not None:
                     midi.all_notes_off()
                     current_chord = None
+            else:
+                if sauce_mode:
+                    raw_info = engine.build_sauce_chord(pending_degree)
                 else:
-                    # Build and send new chord
-                    chord_info = engine.build_chord(
+                    raw_info = engine.build_chord(
                         degree=pending_degree,
-                        quality_override=pending_quality,
-                        add_7th=pending_add_7th,
-                        add_9th=pending_add_9th,
+                        flip_quality=left_gesture.flip_quality,
+                        add_7th=left_gesture.add_7th,
+                        add_9th=left_gesture.add_9th,
+                        add_11th=left_gesture.add_11th,
+                        add_13th=left_gesture.add_13th,
                     )
-                    chord_info['_add_7th'] = pending_add_7th
-                    chord_info['_add_9th'] = pending_add_9th
 
-                    midi.send_chord(chord_info['notes'], velocity=last_velocity)
-                    current_chord = chord_info
-                    if quality_changed:
-                        last_quality_change = now
-
-            elif current_chord and pending_degree != 0:
-                # Same chord but velocity may have changed — update velocity
-                # (re-send if velocity changed significantly)
-                pass
+                # Apply voicing editor (inversion + offsets)
+                voiced_notes = ve.apply(raw_info['notes'], pending_degree)
+                if voiced_notes != (current_chord.get('notes', []) if current_chord else []):
+                    midi.send_chord(voiced_notes, velocity=last_velocity)
+                    current_chord = dict(raw_info, notes=voiced_notes,
+                                        note_names=[_midi_name(n) for n in voiced_notes])
 
         # Draw overlay
         draw_chord_card(
-            frame,
-            chord_info=current_chord or {},
+            frame, chord_info=current_chord or {},
             key_display=engine.get_key_display(),
             mode_display=engine.get_mode_display(),
-            velocity=last_velocity,
-            left_gesture=left_gesture_name,
+            velocity=last_velocity, left_gesture=left_gesture_name,
         )
         draw_status(frame, midi.connected)
         draw_controls_hint(frame)
+        if sauce_mode:
+            draw_sauce_banner(frame)
+        if show_help:
+            draw_help_overlay(frame)
+        elif show_voicings:
+            draw_voicing_panel(frame, engine, ve, sauce_mode)
+        if show_latency:
+            draw_latency_slider(frame, debounce_time, DEBOUNCE_MIN, DEBOUNCE_MAX)
 
         cv2.imshow("MIDI Camera", frame)
 
-        # Key handling
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            midi.close()
-            tracker.release()
-            cap.release()
-            cv2.destroyAllWindows()
-            return 'quit'
-        elif key == 27:  # ESC
-            midi.close()
-            tracker.release()
-            cap.release()
-            cv2.destroyAllWindows()
-            return 'config'
 
-        # Frame rate limiting
+        if key == ord('q'):
+            break
+        elif key == 27:  # ESC
+            if show_help or show_voicings:
+                show_help = False; show_voicings = False
+            else:
+                midi.close(); tracker.release()
+                if face: face.release()
+                cap.release(); cv2.destroyAllWindows()
+                return 'config'
+        elif key == ord('h'):
+            show_help = not show_help; show_voicings = False; show_latency = False
+        elif key == ord('v'):
+            show_voicings = not show_voicings; show_help = False; show_latency = False
+        elif key == ord('l'):
+            show_latency = not show_latency; show_help = False
+        elif key != 255:
+            if show_latency:
+                step = 0.01
+                if key == 3:   debounce_time = min(DEBOUNCE_MAX, debounce_time + step)
+                elif key == 2: debounce_time = max(DEBOUNCE_MIN, debounce_time - step)
+                elif key == ord('r'): debounce_time = DEBOUNCE_DEFAULT
+            elif show_voicings:
+                _handle_voicing_key(key, ve, engine, sauce_mode)
+            elif not show_help:
+                changed = _handle_shortcut(key, engine, midi, ve, show_voicings)
+                if changed:
+                    midi.all_notes_off(); current_chord = None
+                    print(f"[*] {engine.get_key_display()} {engine.get_mode_display()} oct{engine.octave}")
+
         elapsed = time.time() - t_start
         if elapsed < frame_time:
             time.sleep(frame_time - elapsed)
 
-    # Cleanup on camera failure
-    midi.close()
-    tracker.release()
-    cap.release()
-    cv2.destroyAllWindows()
+    midi.close(); tracker.release()
+    if face: face.release()
+    cap.release(); cv2.destroyAllWindows()
     return 'quit'
 
 
+def _midi_name(midi_num: int) -> str:
+    NOTE_NAMES = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B']
+    octave = (midi_num // 12) - 1
+    return f"{NOTE_NAMES[midi_num % 12]}{octave}"
+
+
 def main():
-    # Defaults — just launch. Change these or add CLI args later.
-    config = {
-        'key': 'C',
-        'mode': 'major',
-        'channel': 0,    # MIDI channel 1 (0-indexed)
-        'octave': 3,
-        'camera': 1,     # built-in webcam (0 = iPhone Continuity Camera on this mac)
-    }
-
-    print(f"[*] Starting with: Key={config['key']} Mode={config['mode']} "
+    config = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': 1}
+    print(f"[*] Starting: Key={config['key']} Mode={config['mode']} "
           f"Ch={config['channel']+1} Oct={config['octave']} Cam={config['camera']}")
-
-    result = run_camera(config)
+    run_camera(config)
     print("[*] MIDI Camera closed.")
 
 

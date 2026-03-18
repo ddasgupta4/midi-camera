@@ -102,50 +102,58 @@ class ChordEngine:
     def build_chord(
         self,
         degree: int,
-        quality_override: Optional[str] = None,
+        flip_quality: bool = False,
         add_7th: bool = False,
         add_9th: bool = False,
+        add_11th: bool = False,
+        add_13th: bool = False,
+        quality_override: Optional[str] = None,
     ) -> dict:
         """
         Build a chord for the given scale degree.
 
-        Returns dict with:
-          - notes: list of MIDI note numbers
-          - name: display name (e.g. "F min7")
-          - roman: roman numeral (e.g. "IV")
-          - root_name: root note name
+        Args:
+            degree: 1-7 scale degree
+            flip_quality: swap major<->minor from diatonic
+            add_7th/9th/11th/13th: stack diatonic extensions
+            quality_override: force specific quality (overrides flip)
+
+        Returns dict with notes, name, roman, root_name, note_names, quality, degree.
         """
         if degree < 1 or degree > 7:
-            return {'notes': [], 'name': '', 'roman': '', 'root_name': ''}
+            return {'notes': [], 'name': '', 'roman': '', 'root_name': '', 'degree': 0}
 
         root = self.get_scale_degree_root(degree)
-        quality = quality_override or self.diatonic_qualities[degree - 1]
+        diatonic = self.diatonic_qualities[degree - 1]
 
-        # If add_7th requested and quality is a triad, extend to 7th
-        if add_7th and quality in ('major', 'minor', 'diminished'):
-            if quality == 'major':
-                # Diatonic 7th: check if degree naturally gets maj7 or dom7
-                if degree in (1, 4) and self.mode == 'major':
-                    quality = 'major7'
-                elif degree == 5:
-                    quality = 'dominant7'
-                else:
-                    quality = 'major7'
-            elif quality == 'minor':
-                quality = 'minor7'
-            elif quality == 'diminished':
-                quality = 'min7b5'
+        # Determine triad quality
+        if quality_override:
+            quality = quality_override
+        elif flip_quality:
+            quality = {'major': 'minor', 'minor': 'major',
+                       'diminished': 'augmented'}.get(diatonic, diatonic)
+        else:
+            quality = diatonic
+
+        # Extend to 7th if requested (diatonic to the quality)
+        if add_7th and quality in ('major', 'minor', 'diminished', 'augmented'):
+            quality = self._diatonic_7th_for_quality(quality, degree)
 
         intervals = CHORD_INTERVALS.get(quality, CHORD_INTERVALS['major'])
         notes = [root + i for i in intervals]
 
-        # Add 9th (= root + 14 semitones, or 2nd of next octave)
+        # Stack upper extensions
         if add_9th:
-            ninth = root + 14
-            if ninth not in notes:
-                notes.append(ninth)
+            n = root + 14
+            if n not in notes: notes.append(n)
+        if add_11th:
+            n = root + 17
+            if n not in notes: notes.append(n)
+        if add_13th:
+            n = root + 21
+            if n not in notes: notes.append(n)
 
-        # Build display name
+        # Display name
         root_name = midi_to_note_name(root).rstrip('0123456789')
         quality_label = {
             'major': '', 'minor': 'm', 'diminished': 'dim',
@@ -154,23 +162,113 @@ class ChordEngine:
         }.get(quality, quality)
 
         name = f"{root_name}{quality_label}"
-        if add_9th and '9' not in quality:
-            name += ' add9'
+        if add_13th: name += '13'
+        elif add_11th: name += '11'
+        elif add_9th: name += '9'
 
         roman = ROMAN[degree - 1]
-        # Lowercase roman for minor/dim
         if quality in ('minor', 'minor7', 'diminished', 'dim7', 'min7b5'):
             roman = roman.lower()
-
-        note_names = [midi_to_note_name(n) for n in notes]
 
         return {
             'notes': notes,
             'name': name,
             'roman': roman,
             'root_name': root_name,
-            'note_names': note_names,
+            'note_names': [midi_to_note_name(n) for n in notes],
             'quality': quality,
+            'degree': degree,
+        }
+
+    def _diatonic_7th_for_quality(self, quality: str, degree: int) -> str:
+        """Get the 7th chord type based on the triad quality.
+        
+        major triad -> major7 (or dominant7 for V)
+        minor triad -> minor7
+        diminished triad -> min7b5
+        """
+        if quality == 'major':
+            # V chord naturally gets dom7; otherwise maj7
+            if degree == 5:
+                return 'dominant7'
+            return 'major7'
+        elif quality == 'minor':
+            return 'minor7'
+        elif quality == 'diminished':
+            return 'min7b5'
+        return 'dominant7'
+
+    def build_sauce_chord(self, degree: int) -> dict:
+        """
+        Sauce mode: jazz voicings with good voice leading.
+        
+        Uses drop-2 and spread voicings that sit well in the mid register.
+        All voicings are designed so adjacent degrees share common tones
+        and move by small intervals (good voice leading).
+        
+        Intervals are ABSOLUTE semitones from C0 (MIDI note numbers),
+        built relative to the scale degree root in the current octave.
+        """
+        if degree < 1 or degree > 7:
+            return {'notes': [], 'name': '', 'roman': '', 'root_name': '', 'degree': 0}
+
+        root = self.get_scale_degree_root(degree)
+
+        # Sauce voicings: each is a list of semitone offsets from root
+        # Designed as drop-2 / spread voicings for smooth voice leading
+        # Voicings stay compact (within ~2 octaves) for playability
+        if self.mode == 'major':
+            sauce_voicings = {
+                # I: Cmaj9 drop-2 — root, 9th, 3rd, 7th (rootless-ish, open)
+                1: ([0, 4, 11, 14], 'maj9'),
+                # ii: Dm9 — root, b3, b7, 9th
+                2: ([0, 3, 10, 14], 'm9'),
+                # iii: Em7(9) — root, b3, b7, 9 (same shape, different root)
+                3: ([0, 3, 10, 14], 'm9'),
+                # IV: Fmaj7#11 — root, 3rd, 7th, #11th
+                4: ([0, 4, 11, 18], 'maj7#11'),
+                # V: G9 — root, 3rd, b7, 9th (drop-2 dom9, no 13)
+                5: ([0, 4, 10, 14], '9'),
+                # vi: Am9 — root, b3, b7, 9th
+                6: ([0, 3, 10, 14], 'm9'),
+                # vii: Bm7b5(9) — root, b3, b5, b7, 9
+                7: ([0, 3, 6, 10, 14], 'm7b5(9)'),
+            }
+        else:
+            sauce_voicings = {
+                # i: Cm9 
+                1: ([0, 3, 10, 14], 'm9'),
+                # ii: Dm7b5(9)
+                2: ([0, 3, 6, 10, 14], 'm7b5(9)'),
+                # III: Ebmaj9
+                3: ([0, 4, 11, 14], 'maj9'),
+                # iv: Fm11 — root, b3, b7, 11th
+                4: ([0, 3, 10, 17], 'm11'),
+                # v: Gm9
+                5: ([0, 3, 10, 14], 'm9'),
+                # VI: Abmaj9
+                6: ([0, 4, 11, 14], 'maj9'),
+                # VII: Bb13
+                7: ([0, 4, 10, 21], '13'),
+            }
+
+        intervals, suffix = sauce_voicings[degree]
+        notes = [root + i for i in intervals]
+
+        root_name = midi_to_note_name(root).rstrip('0123456789')
+        name = f"{root_name}{suffix}"
+
+        roman = ROMAN[degree - 1]
+        if 'm' in suffix and suffix != 'maj9' and suffix != 'maj7#11':
+            roman = roman.lower()
+
+        return {
+            'notes': notes,
+            'name': f"~{name}~",
+            'roman': roman,
+            'root_name': root_name,
+            'note_names': [midi_to_note_name(n) for n in notes],
+            'quality': suffix,
             'degree': degree,
         }
 
