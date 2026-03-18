@@ -1,12 +1,11 @@
 """
-Tkinter config screen — launches before the camera.
+OpenCV-based config screen — no tkinter, no framework conflicts.
 
-Lets you pick key, mode, MIDI channel, octave, and camera index.
-Returns config dict when Start is clicked.
-Uses tk.OptionMenu for reliable rendering on macOS.
+Arrow keys navigate, Enter starts. Clean dark UI drawn with cv2.
 """
 
-import tkinter as tk
+import cv2
+import numpy as np
 from typing import Optional
 
 
@@ -21,95 +20,144 @@ KEY_MAP = {
     'A#/Bb': 'A#', 'B': 'B'
 }
 
-BG = '#1a1a1a'
-FG = '#e0e0e0'
-ACCENT = '#8aff8a'
-ENTRY_BG = '#2a2a2a'
-BTN_BG = '#333333'
-FONT = ('Helvetica', 13)
-FONT_BOLD = ('Helvetica', 13, 'bold')
-FONT_HEADER = ('Helvetica', 18, 'bold')
-FONT_SUB = ('Helvetica', 10)
+MODE_OPTIONS = ['Major', 'Minor']
+CHANNEL_OPTIONS = [str(i) for i in range(1, 17)]
+OCTAVE_OPTIONS = [str(i) for i in range(1, 7)]
+CAMERA_OPTIONS = ['0', '1', '2', '3']
+
+FIELDS = [
+    ('Key', KEY_OPTIONS, 0),
+    ('Mode', MODE_OPTIONS, 0),
+    ('MIDI Channel', CHANNEL_OPTIONS, 0),
+    ('Octave', OCTAVE_OPTIONS, 2),    # default octave 3 (index 2)
+    ('Camera', CAMERA_OPTIONS, 0),
+]
+
+# Colors
+BG = (26, 26, 26)
+FG = (224, 224, 224)
+ACCENT = (138, 255, 138)
+DIM = (120, 120, 120)
+HIGHLIGHT_BG = (50, 50, 50)
+SELECTED_BG = (60, 80, 60)
 
 
-def make_option_menu(parent, var, options, width=12):
-    """Create a styled OptionMenu that renders reliably on macOS."""
-    menu = tk.OptionMenu(parent, var, *options)
-    menu.config(
-        bg=ENTRY_BG, fg=FG, activebackground='#444444', activeforeground=FG,
-        highlightthickness=0, relief='flat', font=FONT, width=width,
-        indicatoron=True, bd=0
-    )
-    menu['menu'].config(bg=ENTRY_BG, fg=FG, activebackground='#444444',
-                        activeforeground=FG, font=FONT)
-    return menu
+def draw_config(frame, fields, indices, active_row):
+    """Draw the config screen onto frame."""
+    h, w = frame.shape[:2]
+    frame[:] = BG
+
+    # Title
+    cv2.putText(frame, "MIDI Camera", (w // 2 - 120, 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.1, ACCENT, 2)
+    cv2.putText(frame, "Hand Gesture MIDI Controller", (w // 2 - 165, 85),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, DIM, 1)
+
+    # Fields
+    y_start = 130
+    row_h = 50
+
+    for i, (label, options, _default) in enumerate(fields):
+        y = y_start + i * row_h
+        is_active = (i == active_row)
+
+        # Row background
+        if is_active:
+            cv2.rectangle(frame, (30, y - 5), (w - 30, y + 35), SELECTED_BG, -1)
+        else:
+            cv2.rectangle(frame, (30, y - 5), (w - 30, y + 35), HIGHLIGHT_BG, -1)
+
+        # Label
+        color = ACCENT if is_active else FG
+        cv2.putText(frame, label, (50, y + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
+
+        # Value with arrows
+        val = options[indices[i]]
+        val_x = w - 200
+
+        if is_active:
+            # Draw left/right arrows
+            cv2.putText(frame, "<", (val_x - 25, y + 23),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT, 2)
+            cv2.putText(frame, val, (val_x, y + 23),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACCENT, 2)
+            val_w = cv2.getTextSize(val, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)[0][0]
+            cv2.putText(frame, ">", (val_x + val_w + 12, y + 23),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT, 2)
+        else:
+            cv2.putText(frame, val, (val_x, y + 23),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, FG, 1)
+
+    # Start button area
+    btn_y = y_start + len(fields) * row_h + 25
+    btn_w = 160
+    btn_x = w // 2 - btn_w // 2
+    cv2.rectangle(frame, (btn_x, btn_y), (btn_x + btn_w, btn_y + 45), (50, 120, 50), -1)
+    cv2.putText(frame, "ENTER to Start", (btn_x + 10, btn_y + 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, FG, 1)
+
+    # Controls hint
+    hint_y = h - 20
+    cv2.putText(frame, "Up/Down: select field   Left/Right: change value   Enter: start   Q: quit",
+                (30, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, DIM, 1)
 
 
 def show_config_screen() -> Optional[dict]:
     """
-    Show the config screen. Blocks until Start is clicked or window is closed.
-    Returns config dict or None if cancelled.
+    Show OpenCV config screen. Returns config dict or None if cancelled.
     """
-    result = {'started': False}
+    W, H = 480, 420
+    frame = np.zeros((H, W, 3), dtype=np.uint8)
 
-    root = tk.Tk()
-    root.title("MIDI Camera")
-    root.geometry("360x400")
-    root.resizable(False, False)
-    root.configure(bg=BG)
+    indices = [f[2] for f in FIELDS]  # default indices
+    active_row = 0
 
-    # Header
-    tk.Label(root, text="MIDI Camera", bg=BG, fg=ACCENT,
-             font=FONT_HEADER).pack(pady=(24, 4))
-    tk.Label(root, text="Hand Gesture MIDI Controller", bg=BG,
-             fg='#888888', font=FONT_SUB).pack(pady=(0, 18))
+    cv2.namedWindow("MIDI Camera", cv2.WINDOW_AUTOSIZE)
 
-    # Config grid
-    frame = tk.Frame(root, bg=BG)
-    frame.pack(padx=36, fill='x')
+    while True:
+        draw_config(frame, FIELDS, indices, active_row)
+        cv2.imshow("MIDI Camera", frame)
 
-    def row(label, var, options, r):
-        tk.Label(frame, text=label, bg=BG, fg=FG, font=FONT,
-                 anchor='w').grid(row=r, column=0, sticky='w', pady=7)
-        m = make_option_menu(frame, var, options)
-        m.grid(row=r, column=1, sticky='e', pady=7, padx=(10, 0))
+        key = cv2.waitKey(30) & 0xFF
 
-    key_var   = tk.StringVar(value='C')
-    mode_var  = tk.StringVar(value='Major')
-    ch_var    = tk.StringVar(value='1')
-    oct_var   = tk.StringVar(value='3')
-    cam_var   = tk.StringVar(value='0')
+        if key == ord('q'):
+            cv2.destroyAllWindows()
+            return None
 
-    row("Key",         key_var,  KEY_OPTIONS,                   0)
-    row("Mode",        mode_var, ['Major', 'Minor'],            1)
-    row("MIDI Channel",ch_var,   [str(i) for i in range(1,17)],2)
-    row("Octave",      oct_var,  [str(i) for i in range(1, 7)],3)
-    row("Camera",      cam_var,  ['0', '1', '2', '3'],          4)
+        elif key == 13 or key == 10:  # Enter
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)  # flush
 
-    frame.columnconfigure(1, weight=1)
+            key_val = KEY_OPTIONS[indices[0]]
+            return {
+                'key': KEY_MAP.get(key_val, 'C'),
+                'mode': MODE_OPTIONS[indices[1]].lower(),
+                'channel': int(CHANNEL_OPTIONS[indices[2]]) - 1,
+                'octave': int(OCTAVE_OPTIONS[indices[3]]),
+                'camera': int(CAMERA_OPTIONS[indices[4]]),
+            }
 
-    def on_start():
-        result['started'] = True
-        result['key']     = KEY_MAP.get(key_var.get(), 'C')
-        result['mode']    = mode_var.get().lower()
-        result['channel'] = int(ch_var.get()) - 1   # 0-indexed for MIDI
-        result['octave']  = int(oct_var.get())
-        result['camera']  = int(cam_var.get())
-        root.destroy()
+        # Arrow keys (macOS OpenCV uses these codes)
+        elif key == 0:  # Up
+            active_row = (active_row - 1) % len(FIELDS)
+        elif key == 1:  # Down
+            active_row = (active_row + 1) % len(FIELDS)
+        elif key == 2:  # Left
+            n = len(FIELDS[active_row][1])
+            indices[active_row] = (indices[active_row] - 1) % n
+        elif key == 3:  # Right
+            n = len(FIELDS[active_row][1])
+            indices[active_row] = (indices[active_row] + 1) % n
 
-    tk.Button(
-        root, text="Start", command=on_start,
-        bg=BTN_BG, fg=FG, activebackground='#555555', activeforeground=FG,
-        font=FONT_BOLD, relief='flat', padx=30, pady=8, cursor='hand2',
-        bd=0, highlightthickness=0
-    ).pack(pady=28)
-
-    # Center on screen
-    root.update_idletasks()
-    x = (root.winfo_screenwidth()  - 360) // 2
-    y = (root.winfo_screenheight() - 400) // 2
-    root.geometry(f"360x400+{x}+{y}")
-
-    root.mainloop()
-
-    return result if result['started'] else None
+        # Also support W/S for up/down and A/D for left/right
+        elif key == ord('w'):
+            active_row = (active_row - 1) % len(FIELDS)
+        elif key == ord('s'):
+            active_row = (active_row + 1) % len(FIELDS)
+        elif key == ord('a'):
+            n = len(FIELDS[active_row][1])
+            indices[active_row] = (indices[active_row] - 1) % n
+        elif key == ord('d'):
+            n = len(FIELDS[active_row][1])
+            indices[active_row] = (indices[active_row] + 1) % n
