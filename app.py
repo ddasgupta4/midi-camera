@@ -15,7 +15,7 @@ from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
                          draw_latency_slider)
 
 
-DEBOUNCE_MIN  = 0.05   # 50ms  — yolo
+DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
 DEBOUNCE_MAX  = 0.40   # 400ms — fort knox
 DEBOUNCE_DEFAULT = 0.15
 TARGET_FPS = 30
@@ -80,15 +80,15 @@ class VoicingEditor:
         self.note_offsets[degree] = {}
 
 
-def _handle_shortcut(key: int, engine, midi, voicing_editor=None, voicing_panel_open=False) -> bool:
+def _handle_shortcut(key: int, engine, midi, voicing_editor=None, voicing_panel_open=False, raw_key: int = -1) -> bool:
     """Handle keyboard shortcuts. Returns True if key/octave changed."""
 
     # Z/X = octave down/up
-    if key == ord('z'):
+    if key in (ord('z'), ord('Z')):
         if engine.octave > 1:
             engine.octave -= 1
             return True
-    elif key == ord('x'):
+    elif key in (ord('x'), ord('X')):
         if engine.octave < 6:
             engine.octave += 1
             return True
@@ -100,40 +100,44 @@ def _handle_shortcut(key: int, engine, midi, voicing_editor=None, voicing_panel_
 
     # Arrow keys for key shift when voicing panel NOT open
     elif not voicing_panel_open:
-        if key == 3:  # RIGHT arrow
+        if key == 3 or raw_key == 63235:  # RIGHT arrow
             idx = ALL_KEYS.index(engine.key)
             engine.set_key(ALL_KEYS[(idx + 1) % 12])
             return True
-        elif key == 2:  # LEFT arrow
+        elif key == 2 or raw_key == 63234:  # LEFT arrow
             idx = ALL_KEYS.index(engine.key)
             engine.set_key(ALL_KEYS[(idx - 1) % 12])
             return True
 
     # M = toggle major/minor
-    if key == ord('m'):
+    if key == ord('m') or key == ord('M'):
         engine.set_mode('minor' if engine.mode == 'major' else 'major')
         return True
+
+    # Debug: print unhandled keys
+    if key not in (255, 0) and raw_key != -1:
+        print(f"[debug] unhandled key={key} raw={raw_key}")
 
     return False
 
 
-def _handle_voicing_key(key: int, ve: VoicingEditor, engine, sauce_mode: bool) -> bool:
+def _handle_voicing_key(key: int, ve: VoicingEditor, engine, sauce_mode: bool, raw_key: int = -1) -> bool:
     """Handle keypresses inside the voicing panel. Returns True if state changed."""
     d = ve.selected_degree
     n = ve.selected_note
 
-    if key == 3:  # RIGHT — next degree
+    if key == 3 or raw_key == 63235:  # RIGHT — next degree
         ve.selected_degree = min(7, d + 1)
         ve.selected_note = 0
         return True
-    elif key == 2:  # LEFT — prev degree
+    elif key == 2 or raw_key == 63234:  # LEFT — prev degree
         ve.selected_degree = max(1, d - 1)
         ve.selected_note = 0
         return True
-    elif key == 0:  # UP — nudge selected note up
+    elif key == 0 or raw_key == 63232:  # UP — nudge selected note up
         ve.nudge_note(d, n, 1)
         return True
-    elif key == 1:  # DOWN — nudge selected note down
+    elif key == 1 or raw_key == 63233:  # DOWN — nudge selected note down
         ve.nudge_note(d, n, -1)
         return True
     elif key == ord('i'):  # I = invert up
@@ -281,7 +285,8 @@ def run_camera(config: dict):
 
         cv2.imshow("MIDI Camera", frame)
 
-        key = cv2.waitKey(1) & 0xFF
+        raw_key = cv2.waitKeyEx(1)
+        key = raw_key & 0xFF
 
         if key == ord('q'):
             break
@@ -302,13 +307,13 @@ def run_camera(config: dict):
         elif key != 255:
             if show_latency:
                 step = 0.01
-                if key == 3:   debounce_time = min(DEBOUNCE_MAX, debounce_time + step)
-                elif key == 2: debounce_time = max(DEBOUNCE_MIN, debounce_time - step)
+                if key == 3 or raw_key == 63235:   debounce_time = min(DEBOUNCE_MAX, debounce_time + step)
+                elif key == 2 or raw_key == 63234: debounce_time = max(DEBOUNCE_MIN, debounce_time - step)
                 elif key == ord('r'): debounce_time = DEBOUNCE_DEFAULT
             elif show_voicings:
-                _handle_voicing_key(key, ve, engine, sauce_mode)
+                _handle_voicing_key(key, ve, engine, sauce_mode, raw_key)
             elif not show_help:
-                changed = _handle_shortcut(key, engine, midi, ve, show_voicings)
+                changed = _handle_shortcut(key, engine, midi, ve, show_voicings, raw_key)
                 if changed:
                     midi.all_notes_off(); current_chord = None
                     print(f"[*] {engine.get_key_display()} {engine.get_mode_display()} oct{engine.octave}")

@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0f;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Helvetica Neue', sans-serif;
+    width: 900px;
+    padding: 40px;
+  }
+  h1 {
+    font-size: 36px;
+    font-weight: 800;
+    color: #8aff8a;
+    text-align: center;
+    margin-bottom: 6px;
+    letter-spacing: -1px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #666;
+    font-size: 14px;
+    margin-bottom: 36px;
+  }
+  .section {
+    margin-bottom: 32px;
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .section-header h2 {
+    font-size: 20px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .section-header .hand-label {
+    background: #1a2a1a;
+    color: #8aff8a;
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .section-header .hand-label.left {
+    background: #2a1a1a;
+    color: #ffaa8a;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .card {
+    background: #141418;
+    border: 1px solid #2a2a30;
+    border-radius: 12px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .card .emoji {
+    font-size: 36px;
+    width: 50px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .card .info { flex: 1; }
+  .card .gesture {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 3px;
+  }
+  .card .action {
+    font-size: 13px;
+    color: #888;
+  }
+  .card .chord {
+    font-size: 22px;
+    font-weight: 800;
+    color: #8aff8a;
+    flex-shrink: 0;
+    min-width: 40px;
+    text-align: center;
+  }
+  .card .chord.orange { color: #ffaa8a; }
+  .card.wide {
+    grid-column: 1 / -1;
+  }
+  .divider {
+    border: none;
+    border-top: 1px solid #1a1a20;
+    margin: 8px 0;
+  }
+  .tips {
+    background: #141418;
+    border: 1px solid #2a2a30;
+    border-radius: 12px;
+    padding: 20px 24px;
+  }
+  .tips h3 {
+    font-size: 14px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
+  .tips ul {
+    list-style: none;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .tips li {
+    font-size: 13px;
+    color: #aaa;
+    padding-left: 16px;
+    position: relative;
+  }
+  .tips li::before {
+    content: ">";
+    position: absolute;
+    left: 0;
+    color: #8aff8a;
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+
+<h1>MIDI Camera</h1>
+<p class="subtitle">Hand Gesture MIDI Controller &mdash; Nashville Number System</p>
+
+<div class="section">
+  <div class="section-header">
+    <h2>Right Hand &mdash; Chord Degree</h2>
+    <span class="hand-label">chord select</span>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <div class="emoji">&#x270A;</div>
+      <div class="info">
+        <div class="gesture">Closed Fist</div>
+        <div class="action">Silence (notes off)</div>
+      </div>
+      <div class="chord" style="color:#555">&mdash;</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x261D;&#xFE0F;</div>
+      <div class="info">
+        <div class="gesture">1 Finger (index)</div>
+        <div class="action">Scale degree I</div>
+      </div>
+      <div class="chord">I</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x270C;&#xFE0F;</div>
+      <div class="info">
+        <div class="gesture">2 Fingers</div>
+        <div class="action">Scale degree II</div>
+      </div>
+      <div class="chord">II</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x1F91F;</div>
+      <div class="info">
+        <div class="gesture">3 Fingers</div>
+        <div class="action">Scale degree III</div>
+      </div>
+      <div class="chord">III</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x1F596;</div>
+      <div class="info">
+        <div class="gesture">4 Fingers (no thumb)</div>
+        <div class="action">Scale degree IV</div>
+      </div>
+      <div class="chord">IV</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x1F590;&#xFE0F;</div>
+      <div class="info">
+        <div class="gesture">Open Hand (all 5)</div>
+        <div class="action">Scale degree V</div>
+      </div>
+      <div class="chord">V</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x1F44D;</div>
+      <div class="info">
+        <div class="gesture">Thumb Only</div>
+        <div class="action">Scale degree VI</div>
+      </div>
+      <div class="chord">VI</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x1F918;</div>
+      <div class="info">
+        <div class="gesture">Thumb + Pinky</div>
+        <div class="action">Scale degree VII</div>
+      </div>
+      <div class="chord">VII</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header">
+    <h2>Left Hand &mdash; Modifiers</h2>
+    <span class="hand-label left">quality + dynamics</span>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <div class="emoji">&#x1F590;&#xFE0F;</div>
+      <div class="info">
+        <div class="gesture">Open Flat Palm</div>
+        <div class="action">Force Major quality</div>
+      </div>
+      <div class="chord orange">MAJ</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x1F44A;</div>
+      <div class="info">
+        <div class="gesture">Curled / Half Fist</div>
+        <div class="action">Force Minor quality</div>
+      </div>
+      <div class="chord orange">min</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x1F90C;</div>
+      <div class="info">
+        <div class="gesture">Pinch (thumb + index)</div>
+        <div class="action">Dominant 7th</div>
+      </div>
+      <div class="chord orange">dom7</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x1F91A;</div>
+      <div class="info">
+        <div class="gesture">All Fingers Spread Wide</div>
+        <div class="action">Major 7th</div>
+      </div>
+      <div class="chord orange">maj7</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x261D;&#xFE0F;</div>
+      <div class="info">
+        <div class="gesture">Index Finger Only</div>
+        <div class="action">Add 7th extension</div>
+      </div>
+      <div class="chord orange">+7</div>
+    </div>
+    <div class="card">
+      <div class="emoji">&#x270C;&#xFE0F;</div>
+      <div class="info">
+        <div class="gesture">Peace Sign</div>
+        <div class="action">Add 9th extension</div>
+      </div>
+      <div class="chord orange">+9</div>
+    </div>
+    <div class="card wide">
+      <div class="emoji">&#x2195;&#xFE0F;</div>
+      <div class="info">
+        <div class="gesture">Hand Height (up/down)</div>
+        <div class="action">Controls velocity &mdash; high hand = loud (127), low hand = soft (40)</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tips">
+  <h3>Quick Tips</h3>
+  <ul>
+    <li>No left hand = diatonic default quality</li>
+    <li>Chords debounce at 350ms to avoid misfires</li>
+    <li>Left hand gestures are smoothed over 12 frames</li>
+    <li>Press Q to quit, ESC for config</li>
+    <li>Example: Right 4 fingers + Left curled = iv (minor four)</li>
+    <li>Example: Right open hand + Left pinch = V7 (dominant)</li>
+  </ul>
+</div>
+
+</body>
+</html>
