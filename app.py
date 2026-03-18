@@ -18,7 +18,7 @@ from ui.config_screen import show_config_screen
 
 
 # Debounce: chord must be held this long before triggering (seconds)
-DEBOUNCE_TIME = 0.3
+DEBOUNCE_TIME = 0.35
 
 # Target FPS for camera loop
 TARGET_FPS = 30
@@ -50,6 +50,10 @@ def run_camera(config: dict):
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    # Create window explicitly so it renders properly
+    cv2.namedWindow("MIDI Camera", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("MIDI Camera", 960, 720)
 
     # State tracking
     current_chord = None       # Currently sounding chord info dict
@@ -207,19 +211,20 @@ def run_camera(config: dict):
 
 
 def main():
-    while True:
-        config = show_config_screen()
-        if config is None:
-            print("[*] Config cancelled. Exiting.")
-            sys.exit(0)
+    # Defaults — just launch. Change these or add CLI args later.
+    config = {
+        'key': 'C',
+        'mode': 'major',
+        'channel': 0,    # MIDI channel 1 (0-indexed)
+        'octave': 3,
+        'camera': 1,     # built-in webcam (0 = iPhone Continuity Camera on this mac)
+    }
 
-        result = run_camera(config)
-        if result == 'quit':
-            print("[*] MIDI Camera closed.")
-            sys.exit(0)
-        elif result == 'config':
-            # Loop back to config screen
-            continue
+    print(f"[*] Starting with: Key={config['key']} Mode={config['mode']} "
+          f"Ch={config['channel']+1} Oct={config['octave']} Cam={config['camera']}")
+
+    result = run_camera(config)
+    print("[*] MIDI Camera closed.")
 
 
 if __name__ == '__main__':
