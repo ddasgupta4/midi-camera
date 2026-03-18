@@ -133,7 +133,7 @@ def draw_perf_hud(frame, tier_name: str, display_fps: float,
 
 
 def draw_latency_slider(frame, current: float, lo: float, hi: float):
-    """Latency/debounce slider — press L, then ← → to adjust, R to reset."""
+    """Latency/debounce slider — press L, then < > to adjust, R to reset."""
     fh, fw = frame.shape[:2]
 
     bar_w = 500
@@ -144,7 +144,7 @@ def draw_latency_slider(frame, current: float, lo: float, hi: float):
     draw_semi_transparent_rect(frame, bx, by, bar_w, bar_h, (12, 12, 18), 0.88)
     cv2.rectangle(frame, (bx, by), (bx + bar_w, by + bar_h), (100, 100, 100), 1)
 
-    cv2.putText(frame, "LATENCY  (← → adjust  |  R reset)",
+    cv2.putText(frame, "LATENCY  (< > adjust  |  R reset)",
                 (bx + 14, by + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
     # Zones
@@ -242,7 +242,7 @@ def draw_help_overlay(frame):
             "W E   T Y U     =  C# D#  F# G# A#",
             "Z / X           =  Octave down / up",
             "M               =  Toggle major / minor",
-            "← / →           =  Key chromatic shift",
+            "< / >           =  Key chromatic shift",
             "V               =  Voicing panel",
             "H               =  This help screen",
             "Q / ESC         =  Quit / Config",
@@ -281,7 +281,7 @@ def draw_help_overlay(frame):
 def draw_voicing_panel(frame, chord_engine, voicing_editor, sauce_mode: bool):
     """
     Interactive voicing panel.
-    ← → : select degree   I/U : invert up/down   ↑ ↓ : nudge note   N : next note   R : reset
+    < > : select degree   I/U : invert up/down   ^ v : nudge note   N : next note   R : reset
     """
     fh, fw = frame.shape[:2]
 
@@ -355,8 +355,8 @@ def draw_voicing_panel(frame, chord_engine, voicing_editor, sauce_mode: bool):
 
     # Controls hint at bottom
     hints = [
-        "← → : degree    I : invert ↑    U : invert ↓    N : next note",
-        "↑ ↓ : nudge note ±1 semitone    R : reset degree    V/ESC : close",
+        "< > : degree    I : invert+    U : invert-    N : next note",
+        "^ v : nudge note ±1 semitone    R : reset degree    V/ESC : close",
     ]
     for i, h in enumerate(hints):
         cv2.putText(frame, h, (px + 20, py + panel_h - 36 + i * 18),

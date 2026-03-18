@@ -168,15 +168,21 @@ def _handle_voicing_key(key: int, ve: VoicingEditor, engine, sauce_mode: bool, r
 # ── Graceful degradation ──
 
 class DegradationMonitor:
-    """Tracks inference timing and auto-degrades if falling behind."""
+    """Tracks inference timing, auto-degrades if behind, recovers when stable."""
+
+    WARMUP_FRAMES = 60          # ignore timing until camera/models are warmed up
+    BEHIND_THRESHOLD = 20       # consecutive slow frames before degrading
+    RECOVER_THRESHOLD = 120     # consecutive fast frames before upgrading
+    WARN_COOLDOWN = 10.0        # seconds between log spam
 
     def __init__(self, tier_settings):
         self.settings = tier_settings
         self._behind_count = 0
-        self._behind_threshold = 10  # consecutive slow frames before acting
-        self._face_skip_boost = 0    # additional face skip from degradation
+        self._fast_count = 0
+        self._face_skip_boost = 0
         self._degraded_tier = None
         self._last_warn = 0.0
+        self._frame_count = 0   # for warmup
 
     @property
     def effective_face_skip(self) -> int:
@@ -187,38 +193,55 @@ class DegradationMonitor:
         return self._degraded_tier or self.settings.tier
 
     def check(self, frame_elapsed: float):
-        """Call each frame with total frame time. Auto-degrades if needed."""
-        if frame_elapsed > self.settings.frame_budget:
+        """Call each frame with processing time. Auto-degrades or recovers."""
+        self._frame_count += 1
+        if self._frame_count < self.WARMUP_FRAMES:
+            return  # don't act during warmup
+
+        budget = self.settings.frame_budget
+        if frame_elapsed > budget:
             self._behind_count += 1
-            if self._behind_count >= self._behind_threshold:
+            self._fast_count = 0
+            if self._behind_count >= self.BEHIND_THRESHOLD:
                 self._degrade()
                 self._behind_count = 0
         else:
-            # Slowly recover
+            self._fast_count += 1
             self._behind_count = max(0, self._behind_count - 1)
+            if self._fast_count >= self.RECOVER_THRESHOLD and self._degraded_tier is not None:
+                self._recover()
+                self._fast_count = 0
 
     def _degrade(self):
         now = time.time()
-        if now - self._last_warn < 5.0:
-            return  # don't spam
+        if now - self._last_warn < self.WARN_COOLDOWN:
+            return
 
-        # First: increase face skip
+        # First bump face skip, then drop tier
         if self._face_skip_boost < 8:
             self._face_skip_boost += 2
             print(f"[perf] inference behind, face skip → {self.effective_face_skip}")
-            self._last_warn = now
-            return
+        else:
+            tier_order = [Tier.HIGH, Tier.MEDIUM, Tier.LOW]
+            current = self._degraded_tier or self.settings.tier
+            idx = tier_order.index(current)
+            if idx < len(tier_order) - 1:
+                self._degraded_tier = tier_order[idx + 1]
+                print(f"[perf] dropping to {self._degraded_tier.value.upper()} tier")
+        self._last_warn = now
 
-        # Then: drop tier
+    def _recover(self):
+        """Step back up one tier if things are running smoothly."""
         tier_order = [Tier.HIGH, Tier.MEDIUM, Tier.LOW]
         current = self._degraded_tier or self.settings.tier
         idx = tier_order.index(current)
-        if idx < len(tier_order) - 1:
-            self._degraded_tier = tier_order[idx + 1]
-            new_settings = TIER_CONFIGS[self._degraded_tier]
-            self._face_skip_boost = new_settings.face_frame_skip - self.settings.face_frame_skip
-            print(f"[perf] dropping to {self._degraded_tier.value.upper()} tier")
-            self._last_warn = now
+        if idx > 0:
+            self._degraded_tier = tier_order[idx - 1]
+            self._face_skip_boost = max(0, self._face_skip_boost - 2)
+            if self._degraded_tier == self.settings.tier:
+                self._degraded_tier = None
+                self._face_skip_boost = 0
+            print(f"[perf] recovering → {(self._degraded_tier or self.settings.tier).value.upper()}")
 
 
 def run_camera(config: dict):
