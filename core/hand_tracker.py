@@ -1,12 +1,13 @@
 """
 MediaPipe Hands wrapper — uses the Tasks API (mediapipe >= 0.10).
 
-Processes camera frames and returns hand landmarks with
-handedness classification (left/right).
+Runs inference in a background thread to decouple camera FPS from
+inference FPS. Main thread writes frames, reads latest results.
 """
 
 import os
 import time
+import threading
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -40,8 +41,12 @@ class HandData:
 class HandTracker:
     def __init__(self, max_hands: int = 2,
                  detection_confidence: float = 0.7,
-                 tracking_confidence: float = 0.6):
-
+                 tracking_confidence: float = 0.6,
+                 inference_size: tuple | None = None):
+        """
+        Args:
+            inference_size: (w, h) to downscale before inference, or None for full res.
+        """
         model_path = os.path.abspath(MODEL_PATH)
         if not os.path.exists(model_path):
             raise FileNotFoundError(
@@ -62,17 +67,85 @@ class HandTracker:
         )
         self.landmarker = mp_vision.HandLandmarker.create_from_options(options)
         self._start_time = time.time()
+        self._inference_size = inference_size
 
-    def process(self, frame: np.ndarray) -> Tuple[Optional[HandData], Optional[HandData]]:
-        """
-        Process a BGR frame. Returns (left_hand, right_hand), either may be None.
-        Frame should already be mirrored (selfie mode) before calling.
-        """
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Threading state
+        self._lock = threading.Lock()
+        self._frame_slot: Optional[np.ndarray] = None  # latest frame to process
+        self._frame_shape: Optional[tuple] = None       # (h, w) of display frame
+        self._result: Tuple[Optional[HandData], Optional[HandData]] = (None, None)
+        self._running = True
+        self._has_frame = threading.Event()
+
+        # FPS tracking
+        self._inference_count = 0
+        self._inference_fps = 0.0
+        self._fps_timer = time.time()
+
+        # Start inference thread
+        self._thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self._thread.start()
+
+    def submit_frame(self, frame: np.ndarray):
+        """Submit a new frame for inference (non-blocking, drops old frames)."""
+        with self._lock:
+            self._frame_slot = frame
+            self._frame_shape = frame.shape[:2]
+        self._has_frame.set()
+
+    def get_result(self) -> Tuple[Optional[HandData], Optional[HandData]]:
+        """Get latest inference result (non-blocking)."""
+        with self._lock:
+            return self._result
+
+    @property
+    def inference_fps(self) -> float:
+        return self._inference_fps
+
+    def _inference_loop(self):
+        """Background thread: process frames as they arrive."""
+        while self._running:
+            self._has_frame.wait(timeout=0.1)
+            self._has_frame.clear()
+
+            with self._lock:
+                frame = self._frame_slot
+                display_shape = self._frame_shape
+                self._frame_slot = None
+
+            if frame is None:
+                continue
+
+            left, right = self._run_inference(frame, display_shape)
+
+            with self._lock:
+                self._result = (left, right)
+
+            # FPS tracking
+            self._inference_count += 1
+            now = time.time()
+            elapsed = now - self._fps_timer
+            if elapsed >= 1.0:
+                self._inference_fps = self._inference_count / elapsed
+                self._inference_count = 0
+                self._fps_timer = now
+
+    def _run_inference(self, frame: np.ndarray,
+                       display_shape: tuple) -> Tuple[Optional[HandData], Optional[HandData]]:
+        """Run MediaPipe on a single frame. Handles downscaling."""
+        display_h, display_w = display_shape
+
+        # Downscale for inference if configured
+        if self._inference_size:
+            inf_w, inf_h = self._inference_size
+            small = cv2.resize(frame, (inf_w, inf_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            small = frame
+
+        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-
-        # Timestamp in milliseconds
         timestamp_ms = int((time.time() - self._start_time) * 1000)
+
         results = self.landmarker.detect_for_video(mp_image, timestamp_ms)
 
         left_hand = None
@@ -81,16 +154,17 @@ class HandTracker:
         if not results.hand_landmarks:
             return left_hand, right_hand
 
-        h, w, _ = frame.shape
-
         for lm_list, handedness_list in zip(
             results.hand_landmarks,
             results.handedness
         ):
-            label = handedness_list[0].category_name  # 'Left' or 'Right'
+            label = handedness_list[0].category_name
 
             landmarks = [(lm.x, lm.y, lm.z) for lm in lm_list]
-            pixel_landmarks = [(int(lm.x * w), int(lm.y * h)) for lm in lm_list]
+            # Scale pixel landmarks to display resolution (not inference resolution)
+            pixel_landmarks = [
+                (int(lm.x * display_w), int(lm.y * display_h)) for lm in lm_list
+            ]
 
             hand = HandData(
                 landmarks=landmarks,
@@ -98,13 +172,22 @@ class HandTracker:
                 pixel_landmarks=pixel_landmarks,
             )
 
-            # In mirrored (selfie) mode, MediaPipe 'Right' = user's right hand
             if label == 'Right':
                 right_hand = hand
             else:
                 left_hand = hand
 
         return left_hand, right_hand
+
+    # ── Legacy synchronous API (used by draw_landmarks) ──
+
+    def process(self, frame: np.ndarray) -> Tuple[Optional[HandData], Optional[HandData]]:
+        """
+        Synchronous process — submits frame and returns latest result.
+        For backwards compat; prefer submit_frame + get_result in threaded mode.
+        """
+        self.submit_frame(frame)
+        return self.get_result()
 
     def draw_landmarks(self, frame: np.ndarray, hand: HandData,
                        color: Tuple[int, int, int] = (0, 255, 100)):
@@ -118,4 +201,7 @@ class HandTracker:
             cv2.line(frame, p1, p2, color, 2)
 
     def release(self):
+        self._running = False
+        self._has_frame.set()  # unblock thread
+        self._thread.join(timeout=1.0)
         self.landmarker.close()

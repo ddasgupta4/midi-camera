@@ -5,6 +5,7 @@ MIDI Camera — Hand Gesture MIDI Controller
 import time
 import cv2
 
+from core.performance import get_tier, print_tier_info, Tier, TIER_CONFIGS
 from core.hand_tracker import HandTracker
 from core.face_tracker import FaceTracker
 from core.gesture import interpret_right_hand, interpret_left_hand, LeftHandGesture, reset_gesture_state
@@ -12,7 +13,7 @@ from core.chord_engine import ChordEngine
 from core.midi_output import MidiOutput
 from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
                          draw_sauce_banner, draw_help_overlay, draw_voicing_panel,
-                         draw_latency_slider)
+                         draw_latency_slider, draw_perf_hud)
 
 
 DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
@@ -164,14 +165,75 @@ def _handle_voicing_key(key: int, ve: VoicingEditor, engine, sauce_mode: bool, r
     return False
 
 
+# ── Graceful degradation ──
+
+class DegradationMonitor:
+    """Tracks inference timing and auto-degrades if falling behind."""
+
+    def __init__(self, tier_settings):
+        self.settings = tier_settings
+        self._behind_count = 0
+        self._behind_threshold = 10  # consecutive slow frames before acting
+        self._face_skip_boost = 0    # additional face skip from degradation
+        self._degraded_tier = None
+        self._last_warn = 0.0
+
+    @property
+    def effective_face_skip(self) -> int:
+        return self.settings.face_frame_skip + self._face_skip_boost
+
+    @property
+    def effective_tier(self):
+        return self._degraded_tier or self.settings.tier
+
+    def check(self, frame_elapsed: float):
+        """Call each frame with total frame time. Auto-degrades if needed."""
+        if frame_elapsed > self.settings.frame_budget:
+            self._behind_count += 1
+            if self._behind_count >= self._behind_threshold:
+                self._degrade()
+                self._behind_count = 0
+        else:
+            # Slowly recover
+            self._behind_count = max(0, self._behind_count - 1)
+
+    def _degrade(self):
+        now = time.time()
+        if now - self._last_warn < 5.0:
+            return  # don't spam
+
+        # First: increase face skip
+        if self._face_skip_boost < 8:
+            self._face_skip_boost += 2
+            print(f"[perf] inference behind, face skip → {self.effective_face_skip}")
+            self._last_warn = now
+            return
+
+        # Then: drop tier
+        tier_order = [Tier.HIGH, Tier.MEDIUM, Tier.LOW]
+        current = self._degraded_tier or self.settings.tier
+        idx = tier_order.index(current)
+        if idx < len(tier_order) - 1:
+            self._degraded_tier = tier_order[idx + 1]
+            new_settings = TIER_CONFIGS[self._degraded_tier]
+            self._face_skip_boost = new_settings.face_frame_skip - self.settings.face_frame_skip
+            print(f"[perf] dropping to {self._degraded_tier.value.upper()} tier")
+            self._last_warn = now
+
+
 def run_camera(config: dict):
+    # ── Performance tier ──
+    tier = get_tier()
+    print_tier_info(tier)
+
     engine = ChordEngine(key=config['key'], mode=config['mode'], octave=config['octave'])
     midi = MidiOutput(port_name="MIDI Camera", channel=config['channel'])
-    tracker = HandTracker()
+    tracker = HandTracker(inference_size=tier.inference_size)
     ve = VoicingEditor()
+    degradation = DegradationMonitor(tier)
 
     try:
-        face = FaceTracker()
+        face = FaceTracker(frame_skip=tier.face_frame_skip)
         print("[*] Face tracker loaded (tongue = sauce mode)")
     except FileNotFoundError as e:
         print(f"[!] Face tracker unavailable: {e}")
@@ -207,6 +269,11 @@ def run_camera(config: dict):
         add_9th=False, add_11th=False, add_13th=False, gesture_name="no hand"
     )
 
+    # Display FPS tracking
+    display_fps = 0.0
+    display_frame_count = 0
+    display_fps_timer = time.time()
+
     frame_time = 1.0 / TARGET_FPS
     print(f"[*] MIDI Camera running — Key: {engine.get_key_display()} {engine.get_mode_display()}")
     print(f"[*] MIDI port: {'MIDI Camera' if midi_ok else 'NOT CONNECTED'}")
@@ -219,9 +286,16 @@ def run_camera(config: dict):
 
         frame = cv2.flip(frame, 1)
 
-        left_hand, right_hand = tracker.process(frame)
+        # Submit frame to threaded hand tracker
+        tracker.submit_frame(frame)
+
+        # Face tracking (with frame skip + degradation boost)
         if face:
+            face.frame_skip = degradation.effective_face_skip
             sauce_mode = face.process(frame)
+
+        # Read latest hand results (non-blocking)
+        left_hand, right_hand = tracker.get_result()
 
         if right_hand:
             tracker.draw_landmarks(frame, right_hand, color=(0, 255, 100))
@@ -281,6 +355,13 @@ def run_camera(config: dict):
         elif show_voicings:
             draw_voicing_panel(frame, engine, ve, sauce_mode)
         if show_latency:
+            draw_perf_hud(
+                frame,
+                tier_name=degradation.effective_tier.value.upper(),
+                display_fps=display_fps,
+                hands_fps=tracker.inference_fps,
+                face_fps=face.inference_fps if face else 0.0,
+            )
             draw_latency_slider(frame, debounce_time, DEBOUNCE_MIN, DEBOUNCE_MAX)
 
         cv2.imshow("MIDI Camera", frame)
@@ -318,7 +399,18 @@ def run_camera(config: dict):
                     midi.all_notes_off(); current_chord = None
                     print(f"[*] {engine.get_key_display()} {engine.get_mode_display()} oct{engine.octave}")
 
+        # Frame timing + degradation check
         elapsed = time.time() - t_start
+        degradation.check(elapsed)
+
+        # Display FPS tracking
+        display_frame_count += 1
+        fps_elapsed = time.time() - display_fps_timer
+        if fps_elapsed >= 1.0:
+            display_fps = display_frame_count / fps_elapsed
+            display_frame_count = 0
+            display_fps_timer = time.time()
+
         if elapsed < frame_time:
             time.sleep(frame_time - elapsed)
 

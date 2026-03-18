@@ -2,6 +2,7 @@
 MediaPipe Face Landmarker — detects tongue-out for "sauce mode."
 
 Uses blendshape scores from the FaceLandmarker Tasks API.
+Supports frame skipping to reduce CPU load (heaviest model).
 """
 
 import os
@@ -17,7 +18,12 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'models', 'face_landm
 
 
 class FaceTracker:
-    def __init__(self, detection_confidence: float = 0.5):
+    def __init__(self, detection_confidence: float = 0.5, frame_skip: int = 1):
+        """
+        Args:
+            frame_skip: Run inference every N frames (1 = every frame).
+                        Returns cached result on skipped frames.
+        """
         model_path = os.path.abspath(MODEL_PATH)
         if not os.path.exists(model_path):
             raise FileNotFoundError(
@@ -40,6 +46,10 @@ class FaceTracker:
         self.landmarker = mp_vision.FaceLandmarker.create_from_options(options)
         self._start_time = time.time()
 
+        # Frame skip
+        self._frame_skip = frame_skip
+        self._frame_counter = 0
+
         # Smoothing for mouth-open detection
         self._mouth_history = deque(maxlen=8)
         self._mouth_open_confirmed = False
@@ -50,10 +60,33 @@ class FaceTracker:
         self._last_toggle_time = 0.0
         self._TOGGLE_COOLDOWN = 1.0  # seconds between toggles
 
+        # FPS tracking
+        self._inference_count = 0
+        self._inference_fps = 0.0
+        self._fps_timer = time.time()
+
+    @property
+    def frame_skip(self) -> int:
+        return self._frame_skip
+
+    @frame_skip.setter
+    def frame_skip(self, value: int):
+        self._frame_skip = max(1, value)
+
+    @property
+    def inference_fps(self) -> float:
+        return self._inference_fps
+
     def process(self, frame: np.ndarray) -> bool:
         """
-        Process a BGR frame. Returns True if tongue is out (sauce mode).
+        Process a BGR frame. Returns True if sauce mode is on.
+        Skips inference on non-Nth frames, returning cached result.
         """
+        self._frame_counter += 1
+        if self._frame_counter % self._frame_skip != 0:
+            return self._sauce_on
+
+        # Run actual inference
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         timestamp_ms = int((time.time() - self._start_time) * 1000)
@@ -85,6 +118,14 @@ class FaceTracker:
                 self._sauce_on = not self._sauce_on
                 self._last_toggle_time = now
         self._mouth_open_confirmed = mouth_open
+
+        # FPS tracking
+        self._inference_count += 1
+        elapsed = now - self._fps_timer
+        if elapsed >= 1.0:
+            self._inference_fps = self._inference_count / elapsed
+            self._inference_count = 0
+            self._fps_timer = now
 
         return self._sauce_on
 

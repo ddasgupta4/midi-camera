@@ -105,6 +105,33 @@ def draw_controls_hint(frame):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (190, 190, 190), 1)
 
 
+def draw_perf_hud(frame, tier_name: str, display_fps: float,
+                  hands_fps: float, face_fps: float):
+    """Performance HUD — shown when L panel is open, above the latency slider."""
+    fh, fw = frame.shape[:2]
+
+    hud_w = 500
+    hud_h = 58
+    hx = (fw - hud_w) // 2
+    hy = fh - 90 - 20 - hud_h - 8  # above the latency slider
+
+    draw_semi_transparent_rect(frame, hx, hy, hud_w, hud_h, (12, 12, 18), 0.85)
+    cv2.rectangle(frame, (hx, hy), (hx + hud_w, hy + hud_h), (80, 80, 80), 1)
+
+    # Tier badge
+    tier_colors = {"HIGH": (70, 255, 130), "MEDIUM": (255, 200, 60), "LOW": (80, 80, 255)}
+    tier_color = tier_colors.get(tier_name, (180, 180, 180))
+    cv2.putText(frame, f"TIER: {tier_name}", (hx + 14, hy + 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52, tier_color, 1)
+
+    # FPS readouts
+    fps_str = (f"Display: {display_fps:.0f}fps  |  "
+               f"Hands: {hands_fps:.0f}fps  |  "
+               f"Face: {face_fps:.0f}fps")
+    cv2.putText(frame, fps_str, (hx + 14, hy + 46),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1)
+
+
 def draw_latency_slider(frame, current: float, lo: float, hi: float):
     """Latency/debounce slider — press L, then ← → to adjust, R to reset."""
     fh, fw = frame.shape[:2]
