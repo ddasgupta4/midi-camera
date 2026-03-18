@@ -46,7 +46,7 @@ class LeftHandGesture:
 
 
 # --- Smoothing state for left hand ---
-_left_gesture_history = deque(maxlen=8)  # last 8 frames
+_left_gesture_history = deque(maxlen=12)  # last 12 frames
 _left_confirmed_gesture = "neutral"
 
 
@@ -154,8 +154,8 @@ def _smooth_left_gesture(raw_gesture):
     dominant = max(counts, key=counts.get)
     dominant_count = counts[dominant]
 
-    # Switch to new gesture only if it's dominant (5+ out of 8)
-    threshold = max(5, len(_left_gesture_history) * 0.6)
+    # Switch to new gesture only if it's dominant (8+ out of 12)
+    threshold = max(8, len(_left_gesture_history) * 0.65)
     if dominant_count >= threshold:
         _left_confirmed_gesture = dominant
     # Also switch if current confirmed gesture has 0 recent occurrences

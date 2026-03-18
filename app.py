@@ -64,6 +64,8 @@ def run_camera(config: dict):
     pending_add_9th = False
     last_velocity = 80
     left_gesture_name = ""
+    last_quality_change = 0.0     # timestamp of last quality change
+    QUALITY_DEBOUNCE = 0.4        # seconds before quality change retriggers chord
 
     # Default left hand state when no left hand detected
     default_left = LeftHandGesture(
@@ -135,14 +137,19 @@ def run_camera(config: dict):
             else:
                 pending_resolved_quality = None
 
-            # Check if chord actually changed (compare resolved qualities to avoid
-            # false triggers when removing a modifier that matched the diatonic default)
-            chord_changed = (
-                pending_degree != current_degree
-                or (current_chord and pending_resolved_quality != current_chord.get('quality'))
+            # Check if chord degree changed
+            degree_changed = (pending_degree != current_degree)
+
+            # Check if quality/extensions changed (with separate debounce)
+            quality_changed = (
+                (current_chord and pending_resolved_quality != current_chord.get('quality'))
                 or (current_chord and pending_add_7th != current_chord.get('_add_7th', False))
                 or (current_chord and pending_add_9th != current_chord.get('_add_9th', False))
             )
+
+            # Quality changes need their own debounce to prevent flutter
+            quality_debounce_met = (now - last_quality_change) >= QUALITY_DEBOUNCE
+            chord_changed = degree_changed or (quality_changed and quality_debounce_met)
 
             if chord_changed:
                 if pending_degree == 0:
@@ -162,6 +169,8 @@ def run_camera(config: dict):
 
                     midi.send_chord(chord_info['notes'], velocity=last_velocity)
                     current_chord = chord_info
+                    if quality_changed:
+                        last_quality_change = now
 
             elif current_chord and pending_degree != 0:
                 # Same chord but velocity may have changed — update velocity
