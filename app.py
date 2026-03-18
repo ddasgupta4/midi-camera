@@ -398,6 +398,7 @@ def run_camera(config: dict):
                 if changed:
                     midi.all_notes_off(); current_chord = None
                     print(f"[*] {engine.get_key_display()} {engine.get_mode_display()} oct{engine.octave}")
+                    _save_config({'key': engine.key, 'mode': engine.mode, 'octave': engine.octave})
 
         # Frame timing + degradation check
         elapsed = time.time() - t_start
@@ -426,8 +427,44 @@ def _midi_name(midi_num: int) -> str:
     return f"{NOTE_NAMES[midi_num % 12]}{octave}"
 
 
+def _load_config() -> dict:
+    """Load config.json if it exists, otherwise use defaults."""
+    import json, os
+    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': 1}
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                saved = json.load(f)
+            cfg = {**defaults, **saved}
+            # camera -1 means auto; fall back to 1 (built-in on most Macs)
+            if cfg.get('camera', -1) == -1:
+                cfg['camera'] = 1
+            return cfg
+        except Exception as e:
+            print(f"[!] Could not read config.json: {e}, using defaults")
+    return defaults
+
+
+def _save_config(cfg: dict):
+    """Save updated config back to config.json (called when shortcuts change key/mode/octave)."""
+    import json, os
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    try:
+        # Read existing, merge, write
+        existing = {}
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                existing = json.load(f)
+        existing.update({'key': cfg['key'], 'mode': cfg['mode'], 'octave': cfg['octave']})
+        with open(config_path, 'w') as f:
+            json.dump(existing, f, indent=2)
+    except Exception:
+        pass
+
+
 def main():
-    config = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': 1}
+    config = _load_config()
     print(f"[*] Starting: Key={config['key']} Mode={config['mode']} "
           f"Ch={config['channel']+1} Oct={config['octave']} Cam={config['camera']}")
     run_camera(config)
