@@ -305,6 +305,7 @@ def run_camera(config: dict):
     last_velocity = 80
     left_gesture_name = ""
     sauce_mode = False
+    stable_left_gesture = None  # frozen left modifier — only updates when right hand settled
     show_help = False
     show_voicings = False
     show_latency = False
@@ -351,6 +352,14 @@ def run_camera(config: dict):
         right_gesture = interpret_right_hand(right_hand) if right_hand else None
         left_gesture  = interpret_left_hand(left_hand)  if left_hand  else default_left
 
+        # Freeze left modifier while right hand is settling (prevents IV→V double-trigger
+        # and I→minor-I glitch when both hands move simultaneously)
+        right_transitioning = right_gesture.is_transitioning if right_gesture else False
+        if not right_transitioning:
+            stable_left_gesture = left_gesture
+        if stable_left_gesture is None:
+            stable_left_gesture = left_gesture
+
         last_velocity = left_gesture.velocity
         left_gesture_name = "~SAUCE~" if sauce_mode else left_gesture.gesture_name
 
@@ -371,11 +380,11 @@ def run_camera(config: dict):
                 else:
                     raw_info = engine.build_chord(
                         degree=pending_degree,
-                        flip_quality=left_gesture.flip_quality,
-                        add_7th=left_gesture.add_7th,
-                        add_9th=left_gesture.add_9th,
-                        add_11th=left_gesture.add_11th,
-                        add_13th=left_gesture.add_13th,
+                        flip_quality=stable_left_gesture.flip_quality,
+                        add_7th=stable_left_gesture.add_7th,
+                        add_9th=stable_left_gesture.add_9th,
+                        add_11th=stable_left_gesture.add_11th,
+                        add_13th=stable_left_gesture.add_13th,
                     )
 
                 # Apply voicing editor (inversion + offsets)

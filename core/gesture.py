@@ -33,6 +33,7 @@ FINGER_PIPS = [INDEX_PIP, MIDDLE_PIP, RING_PIP, PINKY_PIP]
 class RightHandGesture:
     degree: int
     finger_count: int
+    is_transitioning: bool = False  # True when thumb/degree hasn't fully settled
 
 
 @dataclass
@@ -212,11 +213,15 @@ def interpret_right_hand(hand: HandData) -> RightHandGesture:
     else:
         raw = min(finger_count, 4)
 
+    # Mark as transitioning when thumb hasn't settled (4-finger IV/V ambiguity)
+    transitioning = (finger_count == 4 and not _thumb_degree.is_settled())
+
     _right_confirmed, _right_time = _smooth(
         _right_history, _right_confirmed, _right_time,
         raw, consensus=0.60, min_hold=0.1,
     )
-    return RightHandGesture(degree=_right_confirmed, finger_count=finger_count)
+    return RightHandGesture(degree=_right_confirmed, finger_count=finger_count,
+                            is_transitioning=transitioning)
 
 
 # ── Left hand (user's right): thumb flip + finger extensions ──
