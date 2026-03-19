@@ -18,7 +18,7 @@ from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
 
 DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
 DEBOUNCE_MAX  = 0.40   # 400ms — fort knox
-DEBOUNCE_DEFAULT = 0.15
+DEBOUNCE_DEFAULT = 0.08  # 80ms — unified settle window
 TARGET_FPS = 30
 ALL_KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -300,19 +300,23 @@ def run_camera(config: dict):
     cv2.resizeWindow("MIDI Camera", 640, 480)  # display smaller; capture stays 960x720
 
     current_chord = None
-    pending_degree = 0
-    pending_since = 0.0
-    committed_left = None       # last committed left gesture used for chord building
-    pending_left = None         # buffered left gesture waiting to settle
-    pending_left_since = 0.0    # when the left gesture last changed
-    MODIFIER_SETTLE = 0.12      # 120ms — left hand modifier settling window
     last_velocity = 80
     left_gesture_name = ""
     sauce_mode = False
+
+    # ── Unified chord settle ──
+    # Every frame we compute what chord SHOULD play. If it differs from
+    # what's currently sounding, we wait for it to stay stable for SETTLE_MS
+    # before firing. This kills all intermediate chord glitches in one shot.
+    desired_notes = []           # what the gesture system wants right now
+    desired_info = {}            # chord info for the desired chord
+    desired_since = 0.0          # when desired_notes last changed
+    # SETTLE_MS is controlled by the latency slider (L key)
+    # debounce_time doubles as the settle window
     show_help = False
     show_voicings = False
     show_latency = False
-    debounce_time = DEBOUNCE_DEFAULT
+    debounce_time = DEBOUNCE_DEFAULT  # used by latency slider UI
 
     default_left = LeftHandGesture(
         flip_quality=False, velocity=80, add_7th=False,
@@ -358,66 +362,44 @@ def run_camera(config: dict):
         last_velocity = left_gesture.velocity
         left_gesture_name = "~SAUCE~" if sauce_mode else left_gesture.gesture_name
 
-        # ── Debounce BOTH hands independently ──
+        # ── Unified chord settle ──
+        # Compute what the chord SHOULD be right now from both hands
         now = time.time()
+        degree = right_gesture.degree if right_gesture else 0
 
-        # Right hand degree debounce
-        target_degree = right_gesture.degree if right_gesture else 0
-        if target_degree != pending_degree:
-            pending_degree = target_degree
-            pending_since = now
-
-        # Left hand modifier debounce — settle before committing
-        if committed_left is None:
-            committed_left = left_gesture
-            pending_left = left_gesture
-        left_sig = (left_gesture.flip_quality, left_gesture.add_7th,
-                    left_gesture.add_9th, left_gesture.add_11th, left_gesture.add_13th)
-        pending_sig = (pending_left.flip_quality, pending_left.add_7th,
-                       pending_left.add_9th, pending_left.add_11th, pending_left.add_13th)
-        committed_sig = (committed_left.flip_quality, committed_left.add_7th,
-                         committed_left.add_9th, committed_left.add_11th, committed_left.add_13th)
-
-        if left_sig != pending_sig:
-            # Left gesture changed — restart settle timer
-            pending_left = left_gesture
-            pending_left_since = now
-        elif left_sig != committed_sig and (now - pending_left_since) >= MODIFIER_SETTLE:
-            # Left gesture settled at a new value — commit it
-            committed_left = pending_left
-
-        # ── Fire chord when BOTH hands have settled ──
-        degree_settled = (now - pending_since) >= debounce_time
-        left_settled = (left_sig == committed_sig) or (now - pending_left_since) >= MODIFIER_SETTLE
-
-        if degree_settled and left_settled:
-            # Commit any pending left changes now
-            if left_sig != committed_sig and (now - pending_left_since) >= MODIFIER_SETTLE:
-                committed_left = pending_left
-
-            if pending_degree == 0:
-                if current_chord is not None:
-                    midi.all_notes_off()
-                    current_chord = None
+        if degree == 0:
+            new_notes = []
+            new_info = {}
+        else:
+            if sauce_mode:
+                new_info = engine.build_sauce_chord(degree)
             else:
-                if sauce_mode:
-                    raw_info = engine.build_sauce_chord(pending_degree)
-                else:
-                    raw_info = engine.build_chord(
-                        degree=pending_degree,
-                        flip_quality=committed_left.flip_quality,
-                        add_7th=committed_left.add_7th,
-                        add_9th=committed_left.add_9th,
-                        add_11th=committed_left.add_11th,
-                        add_13th=committed_left.add_13th,
-                    )
+                new_info = engine.build_chord(
+                    degree=degree,
+                    flip_quality=left_gesture.flip_quality,
+                    add_7th=left_gesture.add_7th,
+                    add_9th=left_gesture.add_9th,
+                    add_11th=left_gesture.add_11th,
+                    add_13th=left_gesture.add_13th,
+                )
+            new_notes = ve.apply(new_info['notes'], degree)
 
-                # Apply voicing editor (inversion + offsets)
-                voiced_notes = ve.apply(raw_info['notes'], pending_degree)
-                if voiced_notes != (current_chord.get('notes', []) if current_chord else []):
-                    midi.send_chord(voiced_notes, velocity=last_velocity)
-                    current_chord = dict(raw_info, notes=voiced_notes,
-                                        note_names=[_midi_name(n) for n in voiced_notes])
+        # Did the desired chord change this frame?
+        if new_notes != desired_notes:
+            desired_notes = new_notes
+            desired_info = new_info
+            desired_since = now
+
+        # Fire only when desired chord has been stable for SETTLE_MS
+        playing_notes = current_chord.get('notes', []) if current_chord else []
+        if desired_notes != playing_notes and (now - desired_since) >= debounce_time:
+            if not desired_notes:
+                midi.all_notes_off()
+                current_chord = None
+            else:
+                midi.send_chord(desired_notes, velocity=last_velocity)
+                current_chord = dict(desired_info, notes=desired_notes,
+                                     note_names=[_midi_name(n) for n in desired_notes])
 
         # Draw overlay
         draw_chord_card(

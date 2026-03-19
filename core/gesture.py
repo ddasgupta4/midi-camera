@@ -202,26 +202,17 @@ def interpret_right_hand(hand: HandData) -> RightHandGesture:
     elif thumb_out and finger_count == 1 and extended[3] and not extended[0]:
         raw = 7                                                # thumb + pinky = VII
     elif finger_count == 4:
-        # Wait for thumb to settle before committing to IV vs V.
-        # Avoids the IV→V double-trigger when spreading thumb takes a few frames.
-        if _thumb_degree.is_settled():
-            raw = 5 if thumb_out else 4
-        else:
-            raw = _right_confirmed  # hold current — don't push anything yet
+        raw = 5 if thumb_out else 4                           # V vs IV
     elif not thumb_out:
         raw = min(finger_count, 4)                            # I–III
     else:
         raw = min(finger_count, 4)
 
-    # Mark as transitioning when thumb hasn't settled (4-finger IV/V ambiguity)
-    transitioning = (finger_count == 4 and not _thumb_degree.is_settled())
-
     _right_confirmed, _right_time = _smooth(
         _right_history, _right_confirmed, _right_time,
         raw, consensus=0.60, min_hold=0.1,
     )
-    return RightHandGesture(degree=_right_confirmed, finger_count=finger_count,
-                            is_transitioning=transitioning)
+    return RightHandGesture(degree=_right_confirmed, finger_count=finger_count)
 
 
 # ── Left hand (user's right): thumb flip + finger extensions ──
