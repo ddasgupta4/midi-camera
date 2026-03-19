@@ -392,3 +392,75 @@ def draw_voicing_panel(frame, chord_engine, voicing_editor, sauce_mode: bool):
     for i, h in enumerate(hints):
         cv2.putText(frame, h, (px + 20, py + panel_h - 36 + i * 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.40, (130, 130, 130), 1)
+
+
+def draw_bass_pedal_panel(frame, bp):
+    """Bass note & pedal tones panel — press P to toggle."""
+    fh, fw = frame.shape[:2]
+
+    panel_w = 420
+    panel_h = 260
+    px = (fw - panel_w) // 2
+    py = (fh - panel_h) // 2
+
+    draw_semi_transparent_rect(frame, px, py, panel_w, panel_h, (15, 15, 20), 0.92)
+    cv2.rectangle(frame, (px, py), (px + panel_w, py + panel_h), (100, 100, 100), 1)
+
+    # Title
+    cv2.putText(frame, "BASS & PEDALS", (px + 20, py + 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (140, 220, 255), 2)
+
+    # ── Bass section ──
+    bass_color = (100, 255, 160) if bp.bass_enabled else (120, 120, 120)
+    bass_label = f"BASS: {'ON  -{bp.bass_octave_offset}oct' if bp.bass_enabled else 'OFF'}"
+    cv2.putText(frame, bass_label, (px + 20, py + 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, bass_color, 2 if bp.bass_enabled else 1)
+
+    cv2.putText(frame, "B=toggle  ^v=octave", (px + 250, py + 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (100, 100, 100), 1)
+
+    # Divider
+    cv2.line(frame, (px + 20, py + 75), (px + panel_w - 20, py + 75), (60, 60, 60), 1)
+
+    # ── Pedal section ──
+    cv2.putText(frame, "PEDAL TONES", (px + 20, py + 98),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (200, 200, 200), 1)
+
+    # Current pedals
+    if bp.pedals:
+        for i, midi_note in enumerate(bp.pedals):
+            name = bp.pedal_name(midi_note)
+            is_selected = (i == bp.selected_pedal)
+            color = (140, 255, 200) if is_selected else (180, 180, 180)
+            weight = 2 if is_selected else 1
+            x_pos = px + 30 + i * 80
+            cv2.putText(frame, name, (x_pos, py + 128),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, weight)
+            if is_selected:
+                # Underline
+                tw = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, 0.6, weight)[0][0]
+                cv2.line(frame, (x_pos, py + 132), (x_pos + tw, py + 132), color, 2)
+    else:
+        cv2.putText(frame, "(none)", (px + 30, py + 128),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (80, 80, 80), 1)
+
+    # ── Add pedal section ──
+    cv2.putText(frame, "Add:", (px + 20, py + 165),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (160, 160, 160), 1)
+
+    # Show the note being built
+    adding_str = bp.adding_note_name
+    cv2.putText(frame, adding_str, (px + 80, py + 165),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 220, 100), 2)
+
+    cv2.putText(frame, "N=note  O=octave  ENTER=add", (px + 170, py + 165),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.36, (100, 100, 100), 1)
+
+    # ── Controls hint ──
+    hints = [
+        "< > : select pedal    X : delete    R : reset all",
+        "P / ESC : close panel",
+    ]
+    for i, h in enumerate(hints):
+        cv2.putText(frame, h, (px + 20, py + panel_h - 36 + i * 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (110, 110, 110), 1)

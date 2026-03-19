@@ -13,7 +13,8 @@ from core.chord_engine import ChordEngine
 from core.midi_output import MidiOutput
 from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
                          draw_sauce_banner, draw_help_overlay, draw_voicing_panel,
-                         draw_latency_slider, draw_perf_hud, draw_debug_gestures)
+                         draw_latency_slider, draw_perf_hud, draw_debug_gestures,
+                         draw_bass_pedal_panel)
 
 
 DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
@@ -99,6 +100,118 @@ class VoicingEditor:
     def reset_degree(self, degree: int):
         self.inversions[degree] = 0
         self.note_offsets[degree] = {}
+
+
+NOTE_NAMES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+
+class BassAndPedals:
+    """Bass note (root N octaves below) + fixed pedal tones."""
+
+    def __init__(self):
+        self.bass_enabled = False
+        self.bass_octave_offset = 1  # 1-3 octaves below root
+
+        self.pedals: list[int] = []  # MIDI note numbers
+        self.max_pedals = 4
+
+        # Panel UI state
+        self.selected_pedal = 0
+        self.adding_note_idx = 0   # index into NOTE_NAMES_SHARP
+        self.adding_octave = 4
+
+    def apply(self, notes: list, root_midi: int) -> list:
+        """Add bass note and pedal tones to the note array."""
+        if not notes:
+            return notes
+        result = list(notes)
+
+        # Bass note
+        if self.bass_enabled and root_midi > 0:
+            bass = root_midi - (12 * self.bass_octave_offset)
+            while bass < 21:  # don't go below A0 (MIDI 21)
+                bass += 12
+            if bass not in result:
+                result.insert(0, bass)
+
+        # Pedal tones
+        for p in self.pedals:
+            if p not in result:
+                result.append(p)
+
+        return sorted(result)
+
+    def add_pedal(self):
+        if len(self.pedals) >= self.max_pedals:
+            return
+        midi_note = (self.adding_octave + 1) * 12 + self.adding_note_idx
+        if midi_note not in self.pedals:
+            self.pedals.append(midi_note)
+            self.selected_pedal = len(self.pedals) - 1
+
+    def delete_pedal(self):
+        if self.pedals and 0 <= self.selected_pedal < len(self.pedals):
+            self.pedals.pop(self.selected_pedal)
+            if self.selected_pedal >= len(self.pedals):
+                self.selected_pedal = max(0, len(self.pedals) - 1)
+
+    def cycle_note(self, direction=1):
+        self.adding_note_idx = (self.adding_note_idx + direction) % 12
+
+    def cycle_octave(self, direction=1):
+        self.adding_octave = max(1, min(6, self.adding_octave + direction))
+
+    def reset(self):
+        self.bass_enabled = False
+        self.bass_octave_offset = 1
+        self.pedals.clear()
+        self.selected_pedal = 0
+
+    @property
+    def adding_note_name(self):
+        return f"{NOTE_NAMES_SHARP[self.adding_note_idx]}{self.adding_octave}"
+
+    def pedal_name(self, midi_note: int) -> str:
+        note = NOTE_NAMES_SHARP[midi_note % 12]
+        octave = (midi_note // 12) - 1
+        return f"{note}{octave}"
+
+
+def _handle_bass_pedal_key(key: int, bp: BassAndPedals, raw_key: int = -1) -> bool:
+    """Handle keypresses inside the bass/pedal panel."""
+    if key == ord('b') or key == ord('B'):
+        bp.bass_enabled = not bp.bass_enabled
+        return True
+    elif key == 0 or raw_key == 63232:  # UP — bass octave up
+        bp.bass_octave_offset = min(3, bp.bass_octave_offset + 1)
+        return True
+    elif key == 1 or raw_key == 63233:  # DOWN — bass octave down
+        bp.bass_octave_offset = max(1, bp.bass_octave_offset - 1)
+        return True
+    elif key == 3 or raw_key == 63235:  # RIGHT — select next pedal / cycle note
+        if bp.pedals:
+            bp.selected_pedal = (bp.selected_pedal + 1) % len(bp.pedals)
+        return True
+    elif key == 2 or raw_key == 63234:  # LEFT — select prev pedal / cycle note
+        if bp.pedals:
+            bp.selected_pedal = (bp.selected_pedal - 1) % len(bp.pedals)
+        return True
+    elif key == ord('n') or key == ord('N'):  # N — cycle adding note name
+        bp.cycle_note(1)
+        return True
+    elif key == ord('o') or key == ord('O'):  # O — cycle adding octave
+        bp.cycle_octave(1)
+        return True
+    elif key == 13 or key == 10:  # ENTER — add the pedal
+        bp.add_pedal()
+        return True
+    elif key == ord('x') or key == ord('X'):  # X — delete selected pedal
+        bp.delete_pedal()
+        return True
+    elif key == ord('r') or key == ord('R'):  # R — reset all
+        bp.reset()
+        return True
+    return False
 
 
 def _handle_shortcut(key: int, engine, midi, voicing_editor=None, voicing_panel_open=False, raw_key: int = -1) -> bool:
@@ -276,6 +389,7 @@ def run_camera(config: dict):
     midi = MidiOutput(port_name="MIDI Camera", channel=config['channel'])
     tracker = HandTracker(inference_size=tier.inference_size)
     ve = VoicingEditor()
+    bp = BassAndPedals()
     degradation = DegradationMonitor(tier)
 
     try:
@@ -317,6 +431,7 @@ def run_camera(config: dict):
     show_voicings = False
     show_latency = False
     show_debug = False
+    show_bass_pedals = False
     debounce_time = DEBOUNCE_DEFAULT  # used by latency slider UI
 
     # default_left is now handled inside interpret_left_hand()
@@ -382,6 +497,9 @@ def run_camera(config: dict):
                     add_13th=left_gesture.add_13th,
                 )
             new_notes = ve.apply(new_info['notes'], degree)
+            # Bass + pedals — root comes from the engine
+            root_midi = engine.get_scale_degree_root(degree)
+            new_notes = bp.apply(new_notes, root_midi)
 
         # Did the desired chord change this frame?
         if new_notes != desired_notes:
@@ -415,6 +533,8 @@ def run_camera(config: dict):
             draw_help_overlay(frame)
         elif show_voicings:
             draw_voicing_panel(frame, engine, ve, sauce_mode)
+        elif show_bass_pedals:
+            draw_bass_pedal_panel(frame, bp)
         if show_latency:
             draw_perf_hud(
                 frame,
@@ -437,8 +557,8 @@ def run_camera(config: dict):
         if key == ord('q'):
             break
         elif key == 27:  # ESC
-            if show_help or show_voicings:
-                show_help = False; show_voicings = False
+            if show_help or show_voicings or show_bass_pedals:
+                show_help = False; show_voicings = False; show_bass_pedals = False
             else:
                 midi.close(); tracker.release()
                 if face: face.release()
@@ -447,7 +567,9 @@ def run_camera(config: dict):
         elif key == ord('h'):
             show_help = not show_help; show_voicings = False; show_latency = False
         elif key == ord('v'):
-            show_voicings = not show_voicings; show_help = False; show_latency = False
+            show_voicings = not show_voicings; show_help = False; show_latency = False; show_bass_pedals = False
+        elif key == ord('p') or key == ord('P'):
+            show_bass_pedals = not show_bass_pedals; show_help = False; show_voicings = False
         elif key == ord('l'):
             show_latency = not show_latency; show_help = False
         elif key == ord('`'):
@@ -460,6 +582,8 @@ def run_camera(config: dict):
                 elif key == ord('r'): debounce_time = DEBOUNCE_DEFAULT
             elif show_voicings:
                 _handle_voicing_key(key, ve, engine, sauce_mode, raw_key)
+            elif show_bass_pedals:
+                _handle_bass_pedal_key(key, bp, raw_key)
             elif not show_help:
                 changed = _handle_shortcut(key, engine, midi, ve, show_voicings, raw_key)
                 if changed:
