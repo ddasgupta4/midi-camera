@@ -458,6 +458,7 @@ def run_camera(config: dict):
     show_latency = False
     show_debug = False
     show_bass_pedals = False
+    smart_extensions = config.get('smart_extensions', True)  # diff-only on extension changes
     debounce_time = DEBOUNCE_DEFAULT  # used by latency slider UI
 
     # default_left is now handled inside interpret_left_hand()
@@ -540,7 +541,17 @@ def run_camera(config: dict):
                 midi.all_notes_off()
                 current_chord = None
             else:
-                midi.send_chord(desired_notes, velocity=last_velocity)
+                # Smart extensions: if same degree+quality, just diff the notes
+                extension_only = (
+                    smart_extensions
+                    and current_chord is not None
+                    and desired_info.get('degree') == current_chord.get('degree')
+                    and desired_info.get('quality') == current_chord.get('quality')
+                )
+                if extension_only:
+                    midi.send_chord_diff(desired_notes, velocity=last_velocity)
+                else:
+                    midi.send_chord(desired_notes, velocity=last_velocity)
                 current_chord = dict(desired_info, notes=desired_notes,
                                      note_names=[_midi_name(n) for n in desired_notes])
 
@@ -551,7 +562,7 @@ def run_camera(config: dict):
             mode_display=engine.get_mode_display(),
             velocity=last_velocity, left_gesture=left_gesture_name,
         )
-        draw_status(frame, midi.connected)
+        draw_status(frame, midi.connected, smart_extensions=smart_extensions)
         draw_controls_hint(frame)
         if sauce_mode:
             draw_sauce_banner(frame)
@@ -600,6 +611,10 @@ def run_camera(config: dict):
             show_latency = not show_latency; show_help = False
         elif key == ord('`'):
             show_debug = not show_debug
+        elif key == ord('.'):
+            smart_extensions = not smart_extensions
+            _save_config({'smart_extensions': smart_extensions})
+            print(f"[*] Smart extensions: {'ON' if smart_extensions else 'OFF'}")
         elif key != 255:
             if show_latency:
                 step = 0.01
@@ -647,7 +662,7 @@ def _midi_name(midi_num: int) -> str:
 def _load_config() -> dict:
     """Load config.json if it exists, otherwise use defaults."""
     import json, os
-    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': 1}
+    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': 1, 'smart_extensions': True}
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     if os.path.exists(config_path):
         try:

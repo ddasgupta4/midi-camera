@@ -55,6 +55,29 @@ class MidiOutput:
 
         self.active_notes = list(notes)
 
+    def send_chord_diff(self, notes: List[int], velocity: int = 100):
+        """
+        Smart chord update — sustain unchanged notes, only NoteOff
+        dropped notes and NoteOn added notes. Use for extension changes.
+        """
+        if not self.connected or not self.midi_out:
+            return
+
+        current = set(self.active_notes)
+        desired = set(notes)
+
+        # NoteOff only for notes that left the chord
+        for note in sorted(current - desired):
+            note = max(0, min(127, note))
+            self.midi_out.send_message([0x80 | self.channel, note, 0])
+
+        # NoteOn only for new notes
+        for note in sorted(desired - current):
+            note = max(0, min(127, note))
+            self.midi_out.send_message([0x90 | self.channel, note, velocity])
+
+        self.active_notes = list(notes)
+
     def all_notes_off(self):
         """Send note-off for all active notes."""
         if not self.connected or not self.midi_out:
