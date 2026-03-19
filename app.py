@@ -18,7 +18,7 @@ from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
 
 DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
 DEBOUNCE_MAX  = 0.40   # 400ms — fort knox
-DEBOUNCE_DEFAULT = 0.08  # 80ms — unified settle window
+DEBOUNCE_DEFAULT = 0.12  # 120ms — unified settle window (gesture smoothers are fast, this is the only gate)
 TARGET_FPS = 30
 ALL_KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 

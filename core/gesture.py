@@ -48,16 +48,18 @@ class LeftHandGesture:
 
 
 # ── Smoothing buffers ──
+# Keep these SMALL — just enough to filter single-frame MediaPipe jitter.
+# The main settle window in app.py handles stability; these just denoise.
 
-_right_history = deque(maxlen=9)
+_right_history = deque(maxlen=5)
 _right_confirmed = 0
 _right_time = 0.0
 
-_left_fingers_history = deque(maxlen=8)
+_left_fingers_history = deque(maxlen=5)
 _left_fingers_confirmed = 0
 _left_fingers_time = 0.0
 
-_left_thumb_history = deque(maxlen=10)
+_left_thumb_history = deque(maxlen=6)
 _left_thumb_confirmed = False
 _left_thumb_time = 0.0
 
@@ -172,12 +174,10 @@ class ThumbDetector:
         return nd_index > thresh or nd_middle > (thresh * 1.08)
 
 
-# Two detector instances — one per hand, different sensitivity
-# Degree hand: needs to reliably distinguish IV (thumb in) vs V (thumb out)
-# Lower thresh + faster response = more decisive switching
-_thumb_degree   = ThumbDetector(thresh_out=0.44, thresh_in=0.30, history_len=10, consensus=0.60, min_hold=0.06)
-# Modifier hand: flip quality — a bit more lenient to enter, same to hold
-_thumb_modifier = ThumbDetector(thresh_out=0.42, thresh_in=0.28, history_len=10, consensus=0.60, min_hold=0.06)
+# Two detector instances — one per hand
+# Small buffers, no hold — just denoise. App.py settle window prevents glitches.
+_thumb_degree   = ThumbDetector(thresh_out=0.44, thresh_in=0.30, history_len=5, consensus=0.60, min_hold=0.0)
+_thumb_modifier = ThumbDetector(thresh_out=0.42, thresh_in=0.28, history_len=5, consensus=0.60, min_hold=0.0)
 
 
 # ── Right hand (user's left): degree ──
@@ -210,7 +210,7 @@ def interpret_right_hand(hand: HandData) -> RightHandGesture:
 
     _right_confirmed, _right_time = _smooth(
         _right_history, _right_confirmed, _right_time,
-        raw, consensus=0.60, min_hold=0.1,
+        raw, consensus=0.60, min_hold=0.0,  # no hold — settle window in app.py handles timing
     )
     return RightHandGesture(degree=_right_confirmed, finger_count=finger_count)
 
@@ -249,10 +249,10 @@ def interpret_left_hand(hand: HandData) -> LeftHandGesture:
     # _left_thumb_confirmed stays in sync for reset_gesture_state()
     _left_thumb_history.append(raw_thumb)
     _left_thumb_confirmed = raw_thumb
-    # Fingers: 70% consensus over 8 frames, 100ms hold
+    # Fingers: 60% consensus, no hold — settle window handles timing
     _left_fingers_confirmed, _left_fingers_time = _smooth(
         _left_fingers_history, _left_fingers_confirmed, _left_fingers_time,
-        raw_fingers, consensus=0.70, min_hold=0.1,
+        raw_fingers, consensus=0.60, min_hold=0.0,
     )
 
     flip = _left_thumb_confirmed
