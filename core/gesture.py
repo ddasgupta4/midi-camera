@@ -102,22 +102,70 @@ def _distance(p1, p2):
 
 MIDDLE_MCP = 9
 
-def _is_thumb_out(landmarks, threshold=0.09):
-    """Thumb detection using distance from thumb tip to index MCP."""
-    return _distance(landmarks[THUMB_TIP], landmarks[INDEX_MCP]) > threshold
+
+class ThumbDetector:
+    """
+    Hysteretic, palm-size-normalized thumb detection.
+
+    Normalizes thumb distances by palm height (WRIST→MIDDLE_MCP) so
+    detection is consistent regardless of how close/far the hand is
+    from the camera, and regardless of hand size.
+
+    Hysteresis: uses a higher threshold to enter "out" state than
+    to stay in it — prevents flicker in the mushy middle zone.
+    """
+
+    def __init__(self, thresh_out=0.50, thresh_in=0.38,
+                 history_len=12, consensus=0.65, min_hold=0.08):
+        """
+        thresh_out: normalized dist needed to ENTER "out" state (stricter)
+        thresh_in:  normalized dist needed to STAY "out" (more lenient)
+        Both thresholds are relative to palm height (WRIST→MIDDLE_MCP).
+        """
+        self.thresh_out = thresh_out
+        self.thresh_in  = thresh_in
+        self._history   = deque(maxlen=history_len)
+        self._consensus = consensus
+        self._min_hold  = min_hold
+        self._confirmed = False
+        self._conf_time = 0.0
+
+    @property
+    def is_out(self) -> bool:
+        return self._confirmed
+
+    def update(self, landmarks) -> bool:
+        raw = self._detect(landmarks)
+        self._confirmed, self._conf_time = _smooth(
+            self._history, self._confirmed, self._conf_time,
+            raw, self._consensus, self._min_hold,
+        )
+        return self._confirmed
+
+    def reset(self):
+        self._history.clear()
+        self._confirmed = False
+        self._conf_time = 0.0
+
+    def _detect(self, lm) -> bool:
+        # Normalize by palm size so results are scale-invariant
+        palm = _distance(lm[WRIST], lm[MIDDLE_MCP])
+        if palm < 0.01:
+            palm = 0.15  # fallback for degenerate frames
+
+        nd_index  = _distance(lm[THUMB_TIP], lm[INDEX_MCP])  / palm
+        nd_middle = _distance(lm[THUMB_TIP], lm[MIDDLE_MCP]) / palm
+
+        # Hysteresis: stay in current state unless signal is strong enough
+        thresh = self.thresh_in if self._confirmed else self.thresh_out
+
+        # OR vote: either signal alone is sufficient (belt-and-suspenders)
+        return nd_index > thresh or nd_middle > (thresh * 1.08)
 
 
-def _is_thumb_out_modifier(landmarks):
-    """
-    More lenient thumb detection for the modifier hand.
-    Uses MIDDLE_MCP (center of palm) as reference — more stable
-    when the hand is held in different orientations.
-    Also lower threshold since the modifier hand is often more relaxed.
-    """
-    # Check both middle and index MCP — if either fires, thumb is out
-    dist_middle = _distance(landmarks[THUMB_TIP], landmarks[MIDDLE_MCP])
-    dist_index = _distance(landmarks[THUMB_TIP], landmarks[INDEX_MCP])
-    return dist_middle > 0.10 or dist_index > 0.08
+# Two detector instances — one per hand, different sensitivity
+_thumb_degree   = ThumbDetector(thresh_out=0.50, thresh_in=0.38, history_len=12, consensus=0.65, min_hold=0.08)
+_thumb_modifier = ThumbDetector(thresh_out=0.46, thresh_in=0.34, history_len=10, consensus=0.62, min_hold=0.07)
 
 
 # ── Right hand (user's left): degree ──
@@ -126,24 +174,25 @@ def interpret_right_hand(hand: HandData) -> RightHandGesture:
     """
     Finger count -> scale degree.
       Fist=silence, 1-3=I-III, 4(thumb tucked)=IV,
-      open hand=V, thumb only=VI, thumb+pinky=VII
+      4(thumb out)=V, thumb only=VI, thumb+pinky=VII
     """
     global _right_confirmed, _right_time
     lm = hand.landmarks
     finger_count, extended = _count_fingers(lm)
-    thumb_dist = _distance(lm[THUMB_TIP], lm[INDEX_MCP])
-    thumb_out = thumb_dist > 0.09
+
+    # Smoothed, hysteretic, palm-normalized thumb detection
+    thumb_out = _thumb_degree.update(lm)
 
     if finger_count == 0 and not thumb_out:
-        raw = 0
+        raw = 0                                                # fist = silence
     elif finger_count == 0 and thumb_out:
-        raw = 6
+        raw = 6                                                # thumb only = VI
     elif thumb_out and finger_count == 1 and extended[3] and not extended[0]:
-        raw = 7
+        raw = 7                                                # thumb + pinky = VII
     elif finger_count == 4:
-        raw = 5 if thumb_dist > 0.09 else 4
+        raw = 5 if thumb_out else 4                           # V vs IV
     elif not thumb_out:
-        raw = min(finger_count, 4)
+        raw = min(finger_count, 4)                            # I–III
     else:
         raw = min(finger_count, 4)
 
@@ -179,16 +228,15 @@ def interpret_left_hand(hand: HandData) -> LeftHandGesture:
     # Velocity
     velocity = max(40, min(127, int(127 - lm[WRIST][1] * 87)))
 
-    # Raw detection
-    raw_thumb = _is_thumb_out_modifier(lm)
+    # Raw detection — thumb uses ThumbDetector (hysteresis + normalization)
+    # Fingers smoothed separately via legacy buffer
+    raw_thumb = _thumb_modifier.update(lm)
     raw_fingers, _ = _count_fingers(lm)
 
-    # Smooth thumb and fingers INDEPENDENTLY
-    # Thumb: 65% consensus over 10 frames, 100ms hold — more responsive
-    _left_thumb_confirmed, _left_thumb_time = _smooth(
-        _left_thumb_history, _left_thumb_confirmed, _left_thumb_time,
-        raw_thumb, consensus=0.65, min_hold=0.1,
-    )
+    # Thumb is handled by ThumbDetector — copy result into legacy buffer so
+    # _left_thumb_confirmed stays in sync for reset_gesture_state()
+    _left_thumb_history.append(raw_thumb)
+    _left_thumb_confirmed = raw_thumb
     # Fingers: 70% consensus over 8 frames, 100ms hold
     _left_fingers_confirmed, _left_fingers_time = _smooth(
         _left_fingers_history, _left_fingers_confirmed, _left_fingers_time,
@@ -226,3 +274,5 @@ def reset_gesture_state():
     _left_thumb_history.clear()
     _left_thumb_confirmed = False
     _left_thumb_time = 0.0
+    _thumb_degree.reset()
+    _thumb_modifier.reset()
