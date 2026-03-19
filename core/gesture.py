@@ -134,6 +134,14 @@ class ThumbDetector:
     def is_out(self) -> bool:
         return self._confirmed
 
+    def is_settled(self, min_frames: int = 8, min_consensus: float = 0.80) -> bool:
+        """True when the thumb state has been consistently stable for enough frames."""
+        if len(self._history) < min_frames:
+            return False
+        recent = list(self._history)[-min_frames:]
+        confirmations = sum(1 for v in recent if v == self._confirmed)
+        return (confirmations / min_frames) >= min_consensus
+
     def update(self, landmarks) -> bool:
         raw = self._detect(landmarks)
         self._confirmed, self._conf_time = _smooth(
@@ -193,7 +201,12 @@ def interpret_right_hand(hand: HandData) -> RightHandGesture:
     elif thumb_out and finger_count == 1 and extended[3] and not extended[0]:
         raw = 7                                                # thumb + pinky = VII
     elif finger_count == 4:
-        raw = 5 if thumb_out else 4                           # V vs IV
+        # Wait for thumb to settle before committing to IV vs V.
+        # Avoids the IV→V double-trigger when spreading thumb takes a few frames.
+        if _thumb_degree.is_settled():
+            raw = 5 if thumb_out else 4
+        else:
+            raw = _right_confirmed  # hold current — don't push anything yet
     elif not thumb_out:
         raw = min(finger_count, 4)                            # I–III
     else:
