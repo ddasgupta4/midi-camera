@@ -115,16 +115,27 @@ class ThumbDetector:
         self.thresh_out = thresh_out  # normalized dist to ENTER "out"
         self.thresh_in  = thresh_in   # normalized dist to STAY "out"
         self._is_out = False
+        self.last_signal = 0.0       # for debug display
     
     def update(self, landmarks) -> bool:
         palm = _palm_size(landmarks)
         
-        # Distance from thumb tip to index MCP and middle MCP
-        nd_index  = _dist(landmarks[THUMB_TIP], landmarks[INDEX_MCP]) / palm
-        nd_middle = _dist(landmarks[THUMB_TIP], landmarks[MIDDLE_MCP]) / palm
+        # Primary signal: thumb tip to palm center (WRIST midpoint area)
+        # Using RING_MCP as anchor — it barely moves when index/middle extend
+        nd_ring = _dist(landmarks[THUMB_TIP], landmarks[RING_MCP]) / palm
         
-        # Use the more generous of the two signals
-        signal = max(nd_index, nd_middle * 0.95)
+        # Secondary: thumb tip to pinky MCP — also very stable
+        nd_pinky = _dist(landmarks[THUMB_TIP], landmarks[PINKY_MCP]) / palm
+        
+        # Also check how far thumb tip is from the thumb CMC (base) —
+        # extended thumb = large distance from its own base
+        nd_base = _dist(landmarks[THUMB_TIP], landmarks[THUMB_CMC]) / palm
+        
+        # Combined signal: ring_mcp distance is the main indicator,
+        # confirmed by the thumb being actually extended from its base
+        signal = nd_ring * 0.6 + nd_pinky * 0.2 + nd_base * 0.2
+        
+        self.last_signal = signal
         
         # Hysteresis
         thresh = self.thresh_in if self._is_out else self.thresh_out
@@ -168,10 +179,10 @@ class HandPersistence:
 # ── Module-level detectors ──
 
 _right_fingers = FingerDetector()
-_right_thumb = ThumbDetector(thresh_out=0.48, thresh_in=0.32)
+_right_thumb = ThumbDetector(thresh_out=0.64, thresh_in=0.48)  # stable anchors (ring/pinky MCP)
 
 _left_fingers = FingerDetector()
-_left_thumb = ThumbDetector(thresh_out=0.44, thresh_in=0.28)  # more sensitive for modifier
+_left_thumb = ThumbDetector(thresh_out=0.62, thresh_in=0.46)  # stable anchors (ring/pinky MCP), higher thresholds
 
 _right_persistence = HandPersistence(hold_frames=3)
 _left_persistence = HandPersistence(hold_frames=3)

@@ -587,8 +587,10 @@ def run_camera(config: dict):
             draw_latency_slider(frame, debounce_time, DEBOUNCE_MIN, DEBOUNCE_MAX)
         if show_debug:
             settle_progress = (now - desired_since) / max(debounce_time, 0.001) if desired_notes != (current_chord.get('notes', []) if current_chord else []) else 1.0
+            from core.gesture import _left_thumb
             draw_debug_gestures(frame, right_gesture, left_gesture, desired_notes,
-                                current_chord.get('notes', []) if current_chord else [], settle_progress)
+                                current_chord.get('notes', []) if current_chord else [], settle_progress,
+                                thumb_signal=_left_thumb.last_signal)
 
         cv2.imshow("MIDI Camera", frame)
 

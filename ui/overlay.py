@@ -121,8 +121,8 @@ def draw_controls_hint(frame):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (190, 190, 190), 1)
 
 
-def draw_debug_gestures(frame, right_gesture, left_gesture, desired_notes, playing_notes, settle_progress: float):
-    """Debug overlay showing raw gesture state — press D to toggle."""
+def draw_debug_gestures(frame, right_gesture, left_gesture, desired_notes, playing_notes, settle_progress: float, thumb_signal: float = 0.0):
+    """Debug overlay showing raw gesture state — press ` to toggle."""
     fh, fw = frame.shape[:2]
 
     lines = []
@@ -132,7 +132,8 @@ def draw_debug_gestures(frame, right_gesture, left_gesture, desired_notes, playi
         lines.append("R: no hand")
     
     lines.append(f"L: flip={left_gesture.flip_quality}  7={left_gesture.add_7th}  "
-                 f"9={left_gesture.add_9th}  11={left_gesture.add_11th}  13={left_gesture.add_13th}")
+                 f"9={left_gesture.add_9th}  11={left_gesture.add_11th}  13={left_gesture.add_13th}  sus4={left_gesture.add_sus4}")
+    lines.append(f"L thumb signal: {thumb_signal:.3f}")
     lines.append(f"Desired: {desired_notes}")
     lines.append(f"Playing: {playing_notes}")
     
