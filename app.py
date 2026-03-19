@@ -302,10 +302,13 @@ def run_camera(config: dict):
     current_chord = None
     pending_degree = 0
     pending_since = 0.0
+    committed_left = None       # last committed left gesture used for chord building
+    pending_left = None         # buffered left gesture waiting to settle
+    pending_left_since = 0.0    # when the left gesture last changed
+    MODIFIER_SETTLE = 0.12      # 120ms — left hand modifier settling window
     last_velocity = 80
     left_gesture_name = ""
     sauce_mode = False
-    stable_left_gesture = None  # frozen left modifier — only updates when right hand settled
     show_help = False
     show_voicings = False
     show_latency = False
@@ -352,24 +355,46 @@ def run_camera(config: dict):
         right_gesture = interpret_right_hand(right_hand) if right_hand else None
         left_gesture  = interpret_left_hand(left_hand)  if left_hand  else default_left
 
-        # Freeze left modifier while right hand is settling (prevents IV→V double-trigger
-        # and I→minor-I glitch when both hands move simultaneously)
-        right_transitioning = right_gesture.is_transitioning if right_gesture else False
-        if not right_transitioning:
-            stable_left_gesture = left_gesture
-        if stable_left_gesture is None:
-            stable_left_gesture = left_gesture
-
         last_velocity = left_gesture.velocity
         left_gesture_name = "~SAUCE~" if sauce_mode else left_gesture.gesture_name
 
-        target_degree = right_gesture.degree if right_gesture else 0
+        # ── Debounce BOTH hands independently ──
         now = time.time()
+
+        # Right hand degree debounce
+        target_degree = right_gesture.degree if right_gesture else 0
         if target_degree != pending_degree:
             pending_degree = target_degree
             pending_since = now
 
-        if (now - pending_since) >= debounce_time:
+        # Left hand modifier debounce — settle before committing
+        if committed_left is None:
+            committed_left = left_gesture
+            pending_left = left_gesture
+        left_sig = (left_gesture.flip_quality, left_gesture.add_7th,
+                    left_gesture.add_9th, left_gesture.add_11th, left_gesture.add_13th)
+        pending_sig = (pending_left.flip_quality, pending_left.add_7th,
+                       pending_left.add_9th, pending_left.add_11th, pending_left.add_13th)
+        committed_sig = (committed_left.flip_quality, committed_left.add_7th,
+                         committed_left.add_9th, committed_left.add_11th, committed_left.add_13th)
+
+        if left_sig != pending_sig:
+            # Left gesture changed — restart settle timer
+            pending_left = left_gesture
+            pending_left_since = now
+        elif left_sig != committed_sig and (now - pending_left_since) >= MODIFIER_SETTLE:
+            # Left gesture settled at a new value — commit it
+            committed_left = pending_left
+
+        # ── Fire chord when BOTH hands have settled ──
+        degree_settled = (now - pending_since) >= debounce_time
+        left_settled = (left_sig == committed_sig) or (now - pending_left_since) >= MODIFIER_SETTLE
+
+        if degree_settled and left_settled:
+            # Commit any pending left changes now
+            if left_sig != committed_sig and (now - pending_left_since) >= MODIFIER_SETTLE:
+                committed_left = pending_left
+
             if pending_degree == 0:
                 if current_chord is not None:
                     midi.all_notes_off()
@@ -380,11 +405,11 @@ def run_camera(config: dict):
                 else:
                     raw_info = engine.build_chord(
                         degree=pending_degree,
-                        flip_quality=stable_left_gesture.flip_quality,
-                        add_7th=stable_left_gesture.add_7th,
-                        add_9th=stable_left_gesture.add_9th,
-                        add_11th=stable_left_gesture.add_11th,
-                        add_13th=stable_left_gesture.add_13th,
+                        flip_quality=committed_left.flip_quality,
+                        add_7th=committed_left.add_7th,
+                        add_9th=committed_left.add_9th,
+                        add_11th=committed_left.add_11th,
+                        add_13th=committed_left.add_13th,
                     )
 
                 # Apply voicing editor (inversion + offsets)
