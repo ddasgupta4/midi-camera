@@ -51,33 +51,42 @@ def save_config(cfg: dict):
 def detect_cameras() -> list[tuple[int, str]]:
     """
     Returns list of (cv_index, display_name) for available cameras.
-    Uses AVFoundation to get real device names, maps to OpenCV indices.
+    Uses AVFoundation uniqueID to reliably map devices to OpenCV indices.
     """
     cameras = []
 
-    # Try AVFoundation for real names
+    # Get AVFoundation devices with unique IDs
+    av_devices = []  # list of (uniqueID, localizedName)
     try:
         from AVFoundation import AVCaptureDevice, AVMediaTypeVideo
         devices = AVCaptureDevice.devicesWithMediaType_(AVMediaTypeVideo)
-        av_names = [d.localizedName() for d in devices]
+        av_devices = [(d.uniqueID(), d.localizedName()) for d in devices]
     except Exception:
-        av_names = []
+        pass
 
-    # Probe OpenCV indices 0-4
-    cv_indices = []
-    for idx in range(5):
-        cap = __import__('cv2').VideoCapture(idx)
-        if cap.isOpened():
-            cv_indices.append(idx)
-            cap.release()
+    if av_devices:
+        # AVFoundation index order matches OpenCV index order on macOS
+        # Probe which OpenCV indices are available
+        cv_available = []
+        for idx in range(5):
+            cap = __import__('cv2').VideoCapture(idx)
+            if cap.isOpened():
+                cv_available.append(idx)
+                cap.release()
 
-    # Pair them up (AVFoundation order usually matches OpenCV order)
-    for i, cv_idx in enumerate(cv_indices):
-        if i < len(av_names):
-            name = av_names[i]
-        else:
-            name = f"Camera {cv_idx}"
-        cameras.append((cv_idx, name))
+        for i, cv_idx in enumerate(cv_available):
+            if i < len(av_devices):
+                _, name = av_devices[i]
+            else:
+                name = f"Camera {cv_idx}"
+            cameras.append((cv_idx, name))
+    else:
+        # Fallback: no AVFoundation, just probe indices
+        for idx in range(5):
+            cap = __import__('cv2').VideoCapture(idx)
+            if cap.isOpened():
+                cameras.append((idx, f"Camera {idx}"))
+                cap.release()
 
     if not cameras:
         cameras = [(0, "Default Camera"), (1, "Camera 1")]
@@ -114,9 +123,10 @@ class MidiCameraApp(rumps.App):
         self.cfg = load_config()
         self.cameras = detect_cameras()
 
-        # Auto-detect camera on first run
-        if self.cfg['camera'] == -1:
-            self.cfg['camera'] = best_camera(self.cameras)
+        # Always auto-detect best camera (saved index may be stale)
+        detected = best_camera(self.cameras)
+        if self.cfg['camera'] == -1 or self.cfg['camera'] != detected:
+            self.cfg['camera'] = detected
             save_config(self.cfg)
 
         self._proc = None

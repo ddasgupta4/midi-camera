@@ -453,7 +453,7 @@ def draw_bass_pedal_panel(frame, bp):
     cv2.putText(frame, adding_str, (px + 80, py + 165),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 220, 100), 2)
 
-    cv2.putText(frame, "N=note  O=octave  ENTER=add", (px + 170, py + 165),
+    cv2.putText(frame, "N=note  O/I=oct+/-  ENTER=add", (px + 170, py + 165),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.36, (100, 100, 100), 1)
 
     # ── Controls hint ──

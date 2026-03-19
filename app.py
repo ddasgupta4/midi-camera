@@ -126,9 +126,17 @@ class BassAndPedals:
             return notes
         result = list(notes)
 
-        # Bass note
+        # Bass note — always 1 octave below the chord's lowest note
         if self.bass_enabled and root_midi > 0:
-            bass = root_midi - (12 * self.bass_octave_offset)
+            # Use the root's pitch class but place it below the chord
+            root_pc = root_midi % 12
+            lowest = min(notes)
+            # Put root pitch class just below the lowest chord note
+            bass = lowest - (lowest - root_pc) % 12
+            if bass == lowest:
+                bass -= 12  # must be below the chord
+            # Apply additional octave offset (offset 1 = already 1 oct below)
+            bass -= 12 * (self.bass_octave_offset - 1)
             while bass < 21:  # don't go below A0 (MIDI 21)
                 bass += 12
             if bass not in result:
@@ -160,6 +168,12 @@ class BassAndPedals:
 
     def cycle_octave(self, direction=1):
         self.adding_octave = max(1, min(6, self.adding_octave + direction))
+
+    def transpose(self, semitones: int):
+        """Shift all pedal notes by semitones (e.g. key change)."""
+        self.pedals = [
+            max(21, min(108, p + semitones)) for p in self.pedals
+        ]
 
     def reset(self):
         self.bass_enabled = False
@@ -199,8 +213,11 @@ def _handle_bass_pedal_key(key: int, bp: BassAndPedals, raw_key: int = -1) -> bo
     elif key == ord('n') or key == ord('N'):  # N — cycle adding note name
         bp.cycle_note(1)
         return True
-    elif key == ord('o') or key == ord('O'):  # O — cycle adding octave
+    elif key == ord('o') or key == ord('O'):  # O — cycle adding octave UP
         bp.cycle_octave(1)
+        return True
+    elif key == ord('i') or key == ord('I'):  # I — cycle adding octave DOWN
+        bp.cycle_octave(-1)
         return True
     elif key == 13 or key == 10:  # ENTER — add the pedal
         bp.add_pedal()
@@ -214,8 +231,10 @@ def _handle_bass_pedal_key(key: int, bp: BassAndPedals, raw_key: int = -1) -> bo
     return False
 
 
-def _handle_shortcut(key: int, engine, midi, voicing_editor=None, voicing_panel_open=False, raw_key: int = -1) -> bool:
+def _handle_shortcut(key: int, engine, midi, voicing_editor=None, voicing_panel_open=False, raw_key: int = -1, bass_pedals=None) -> bool:
     """Handle keyboard shortcuts. Returns True if key/octave changed."""
+
+    old_key_idx = ALL_KEYS.index(engine.key)
 
     # Z/X = octave down/up
     if key in (ord('z'), ord('Z')):
@@ -229,18 +248,25 @@ def _handle_shortcut(key: int, engine, midi, voicing_editor=None, voicing_panel_
 
     # Piano keyboard layout for key selection
     elif key in KEY_MAP:
-        engine.set_key(KEY_MAP[key])
+        new_key = KEY_MAP[key]
+        semis = (ALL_KEYS.index(new_key) - old_key_idx) % 12
+        if semis > 6: semis -= 12  # shortest path
+        engine.set_key(new_key)
+        if bass_pedals and bass_pedals.pedals and semis != 0:
+            bass_pedals.transpose(semis)
         return True
 
     # Arrow keys for key shift when voicing panel NOT open
     elif not voicing_panel_open:
         if key == 3 or raw_key == 63235:  # RIGHT arrow
-            idx = ALL_KEYS.index(engine.key)
-            engine.set_key(ALL_KEYS[(idx + 1) % 12])
+            engine.set_key(ALL_KEYS[(old_key_idx + 1) % 12])
+            if bass_pedals and bass_pedals.pedals:
+                bass_pedals.transpose(1)
             return True
         elif key == 2 or raw_key == 63234:  # LEFT arrow
-            idx = ALL_KEYS.index(engine.key)
-            engine.set_key(ALL_KEYS[(idx - 1) % 12])
+            engine.set_key(ALL_KEYS[(old_key_idx - 1) % 12])
+            if bass_pedals and bass_pedals.pedals:
+                bass_pedals.transpose(-1)
             return True
 
     # M = toggle major/minor
@@ -585,7 +611,7 @@ def run_camera(config: dict):
             elif show_bass_pedals:
                 _handle_bass_pedal_key(key, bp, raw_key)
             elif not show_help:
-                changed = _handle_shortcut(key, engine, midi, ve, show_voicings, raw_key)
+                changed = _handle_shortcut(key, engine, midi, ve, show_voicings, raw_key, bass_pedals=bp)
                 if changed:
                     midi.all_notes_off(); current_chord = None
                     print(f"[*] {engine.get_key_display()} {engine.get_mode_display()} oct{engine.octave}")
