@@ -459,6 +459,7 @@ def run_camera(config: dict):
     show_debug = False
     show_bass_pedals = False
     smart_extensions = config.get('smart_extensions', True)  # diff-only on extension changes
+    style_mode = config.get('style_mode', 'andrew')          # 'andrew' or 'dylan'
     debounce_time = DEBOUNCE_DEFAULT  # used by latency slider UI
 
     # default_left is now handled inside interpret_left_hand()
@@ -484,9 +485,11 @@ def run_camera(config: dict):
         tracker.submit_frame(frame)
 
         # Face tracking (with frame skip + degradation boost)
-        if face:
+        if face and style_mode == 'andrew':
             face.frame_skip = degradation.effective_face_skip
             sauce_mode = face.process(frame)
+        elif style_mode != 'andrew':
+            sauce_mode = False  # sauce is Andrew-only
 
         # Read latest hand results (non-blocking)
         left_hand, right_hand = tracker.get_result()
@@ -498,7 +501,7 @@ def run_camera(config: dict):
 
         # Gesture interpretation — persistence + hysteresis handled internally
         right_gesture = interpret_right_hand(right_hand)
-        left_gesture  = interpret_left_hand(left_hand)
+        left_gesture  = interpret_left_hand(left_hand, style_mode=style_mode)
 
         last_velocity = left_gesture.velocity
         left_gesture_name = "~SAUCE~" if sauce_mode else left_gesture.gesture_name
@@ -522,6 +525,7 @@ def run_camera(config: dict):
                     add_9th=left_gesture.add_9th,
                     add_11th=left_gesture.add_11th,
                     add_13th=left_gesture.add_13th,
+                    add_sus4=left_gesture.add_sus4,
                 )
             new_notes = ve.apply(new_info['notes'], degree)
             # Bass + pedals — root comes from the engine
@@ -562,7 +566,7 @@ def run_camera(config: dict):
             mode_display=engine.get_mode_display(),
             velocity=last_velocity, left_gesture=left_gesture_name,
         )
-        draw_status(frame, midi.connected, smart_extensions=smart_extensions)
+        draw_status(frame, midi.connected, smart_extensions=smart_extensions, style_mode=style_mode)
         draw_controls_hint(frame)
         if sauce_mode:
             draw_sauce_banner(frame)
@@ -615,6 +619,11 @@ def run_camera(config: dict):
             smart_extensions = not smart_extensions
             _save_config({'smart_extensions': smart_extensions})
             print(f"[*] Smart extensions: {'ON' if smart_extensions else 'OFF'}")
+        elif key == ord('/'):
+            style_mode = 'dylan' if style_mode == 'andrew' else 'andrew'
+            _save_config({'style_mode': style_mode})
+            midi.all_notes_off(); current_chord = None
+            print(f"[*] Style mode: {style_mode.upper()}")
         elif key != 255:
             if show_latency:
                 step = 0.01
@@ -662,7 +671,7 @@ def _midi_name(midi_num: int) -> str:
 def _load_config() -> dict:
     """Load config.json if it exists, otherwise use defaults."""
     import json, os
-    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': 1, 'smart_extensions': True}
+    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': 1, 'smart_extensions': True, 'style_mode': 'andrew'}
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     if os.path.exists(config_path):
         try:

@@ -48,6 +48,7 @@ class LeftHandGesture:
     add_9th: bool
     add_11th: bool
     add_13th: bool
+    add_sus4: bool
     gesture_name: str
 
 
@@ -211,41 +212,60 @@ def interpret_right_hand(hand: Optional[HandData]) -> Optional[RightHandGesture]
 
 # ── Left hand: modifier detection ──
 
-def interpret_left_hand(hand: Optional[HandData]) -> LeftHandGesture:
+def interpret_left_hand(hand: Optional[HandData], style_mode: str = 'andrew') -> LeftHandGesture:
     """
     Thumb = flip quality, fingers = extensions. No smoothing.
-    
+
+    style_mode='andrew': Andrew Mode — 7/9/11/13 stacking (jazz/sauce)
+    style_mode='dylan':  Dylan Mode  — 7/add9/sus4/9th (pop/indie/emo)
+
     Returns default gesture if no hand detected.
     """
     _DEFAULT = LeftHandGesture(
         flip_quality=False, velocity=80, add_7th=False,
-        add_9th=False, add_11th=False, add_13th=False, gesture_name="no hand"
+        add_9th=False, add_11th=False, add_13th=False, add_sus4=False,
+        gesture_name="no hand"
     )
-    
+
     hand = _left_persistence.update(hand)
     if hand is None:
         return _DEFAULT
-    
+
     lm = hand.landmarks
     finger_count, _ = _left_fingers.update(lm)
     flip = _left_thumb.update(lm)
-    
+
     # Velocity from wrist height (higher hand = louder)
     velocity = max(40, min(127, int(127 - lm[WRIST][1] * 87)))
-    
-    # Extensions stack
-    ext_names = {0: "triad", 1: "7th", 2: "9th", 3: "11th", 4: "13th"}
-    name = ("flip " if flip else "") + ext_names.get(finger_count, "triad")
-    
-    return LeftHandGesture(
-        flip_quality=flip,
-        velocity=velocity,
-        add_7th=finger_count >= 1,
-        add_9th=finger_count >= 2,
-        add_11th=finger_count >= 3,
-        add_13th=finger_count >= 4,
-        gesture_name=name,
-    )
+
+    if style_mode == 'dylan':
+        # Dylan Mode: 0=triad 1=7th 2=add9(no 7) 3=sus4 4=9th(7+9)
+        ext_names = {0: "triad", 1: "7th", 2: "add9", 3: "sus4", 4: "9th"}
+        name = ("flip " if flip else "") + ext_names.get(finger_count, "triad")
+        return LeftHandGesture(
+            flip_quality=flip,
+            velocity=velocity,
+            add_7th=finger_count in (1, 4),          # 7th: 1-finger and 4-finger
+            add_9th=finger_count in (2, 4),          # add9: 2-finger (no 7), 9th: 4-finger (with 7)
+            add_11th=False,
+            add_13th=False,
+            add_sus4=finger_count == 3,
+            gesture_name=name,
+        )
+    else:
+        # Andrew Mode: 0=triad 1=7th 2=9th 3=11th 4=13th (stacking)
+        ext_names = {0: "triad", 1: "7th", 2: "9th", 3: "11th", 4: "13th"}
+        name = ("flip " if flip else "") + ext_names.get(finger_count, "triad")
+        return LeftHandGesture(
+            flip_quality=flip,
+            velocity=velocity,
+            add_7th=finger_count >= 1,
+            add_9th=finger_count >= 2,
+            add_11th=finger_count >= 3,
+            add_13th=finger_count >= 4,
+            add_sus4=False,
+            gesture_name=name,
+        )
 
 
 # ── Reset ──

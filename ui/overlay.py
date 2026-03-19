@@ -74,7 +74,7 @@ def draw_chord_card(frame, chord_info: dict, key_display: str, mode_display: str
     cv2.rectangle(frame, (tx, bar_y), (tx + fill, bar_y + bar_h), (0, g, r), -1)
 
 
-def draw_status(frame, midi_connected: bool, smart_extensions: bool = True):
+def draw_status(frame, midi_connected: bool, smart_extensions: bool = True, style_mode: str = 'andrew'):
     """MIDI status — top right."""
     fh, fw = frame.shape[:2]
     label = "MIDI: Connected" if midi_connected else "MIDI: Off"
@@ -84,12 +84,21 @@ def draw_status(frame, midi_connected: bool, smart_extensions: bool = True):
     ty = 36
     draw_semi_transparent_rect(frame, tx - 10, ty - 24, sz[0] + 20, 34, (15, 15, 15), 0.65)
     cv2.putText(frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 1)
-    # Smart extensions indicator below MIDI status
+
+    # Style mode badge
+    mode_label = "ANDREW MODE" if style_mode == 'andrew' else "DYLAN MODE"
+    mode_color = (180, 130, 255) if style_mode == 'andrew' else (100, 220, 255)
+    msz = cv2.getTextSize(mode_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+    mx = fw - msz[0] - 18
+    my = ty + 22
+    cv2.putText(frame, mode_label, (mx, my), cv2.FONT_HERSHEY_SIMPLEX, 0.5, mode_color, 1)
+
+    # Smart extensions indicator
     ext_label = "EXT: smart" if smart_extensions else "EXT: retrigger"
     ext_color = (180, 220, 255) if smart_extensions else (140, 140, 140)
     esz = cv2.getTextSize(ext_label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
     ex = fw - esz[0] - 18
-    ey = ty + 22
+    ey = my + 20
     cv2.putText(frame, ext_label, (ex, ey), cv2.FONT_HERSHEY_SIMPLEX, 0.45, ext_color, 1)
 
 
@@ -285,6 +294,7 @@ def draw_help_overlay(frame):
             "P               =  Bass/pedal panel",
             "L               =  Latency slider",
             ".               =  Toggle smart extensions",
+            "/               =  Toggle Andrew / Dylan mode",
             "H               =  This help screen",
             "Q / ESC         =  Quit / Config",
         ]),

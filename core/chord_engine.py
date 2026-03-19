@@ -38,6 +38,8 @@ CHORD_INTERVALS = {
     'minor7':      [0, 3, 7, 10],
     'dim7':        [0, 3, 6, 9],
     'min7b5':      [0, 3, 6, 10],
+    'sus4':        [0, 5, 7],        # suspended 4th — no 3rd
+    'sus4_7':      [0, 5, 7, 10],   # sus4 + b7 (dom7sus4)
 }
 
 # Roman numeral labels
@@ -107,6 +109,7 @@ class ChordEngine:
         add_9th: bool = False,
         add_11th: bool = False,
         add_13th: bool = False,
+        add_sus4: bool = False,
         quality_override: Optional[str] = None,
     ) -> dict:
         """
@@ -135,15 +138,18 @@ class ChordEngine:
         else:
             quality = diatonic
 
+        # Sus4 overrides the triad — no 3rd, quality flip ignored
+        if add_sus4:
+            quality = 'sus4_7' if add_7th else 'sus4'
         # Extend to 7th if requested (diatonic to the quality)
-        if add_7th and quality in ('major', 'minor', 'diminished', 'augmented'):
+        elif add_7th and quality in ('major', 'minor', 'diminished', 'augmented'):
             quality = self._diatonic_7th_for_quality(quality, degree)
 
         intervals = CHORD_INTERVALS.get(quality, CHORD_INTERVALS['major'])
         notes = [root + i for i in intervals]
 
         # Stack upper extensions
-        if add_9th:
+        if add_9th and not add_sus4:
             n = root + 14
             if n not in notes: notes.append(n)
         if add_11th:
@@ -159,12 +165,28 @@ class ChordEngine:
             'major': '', 'minor': 'm', 'diminished': 'dim',
             'augmented': 'aug', 'dominant7': '7', 'major7': 'maj7',
             'minor7': 'm7', 'dim7': 'dim7', 'min7b5': 'm7b5',
+            'sus4': 'sus4', 'sus4_7': '7sus4',
         }.get(quality, quality)
 
         name = f"{root_name}{quality_label}"
-        if add_13th: name += '13'
-        elif add_11th: name += '11'
-        elif add_9th: name += '9'
+        if not add_sus4:
+            if add_13th:
+                # Cmaj7+13 → Cmaj13, Cm7+13 → Cm13, C7+13 → C13
+                name = name.replace('maj7', 'maj').replace('m7', 'm').replace('7', '') + '13'
+                if 'maj13' not in name and 'm13' not in name and not name.endswith('13'):
+                    name += '13'
+            elif add_11th:
+                name = name.replace('maj7', 'maj').replace('m7', 'm').replace('7', '') + '11'
+                if not name.endswith('11'):
+                    name += '11'
+            elif add_9th:
+                if add_7th:
+                    # Cmaj7+9 → Cmaj9, Cm7+9 → Cm9, C7+9 → C9
+                    name = name.replace('maj7', 'maj').replace('m7', 'm').replace('7', '') + '9'
+                    if not name.endswith('9'):
+                        name += '9'
+                else:
+                    name += 'add9'
 
         roman = ROMAN[degree - 1]
         if quality in ('minor', 'minor7', 'diminished', 'dim7', 'min7b5'):
