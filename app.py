@@ -8,17 +8,17 @@ import cv2
 from core.performance import get_tier, print_tier_info, Tier, TIER_CONFIGS
 from core.hand_tracker import HandTracker
 from core.face_tracker import FaceTracker
-from core.gesture import interpret_right_hand, interpret_left_hand, LeftHandGesture, reset_gesture_state
+from core.gesture import interpret_right_hand, interpret_left_hand, reset_gesture_state
 from core.chord_engine import ChordEngine
 from core.midi_output import MidiOutput
 from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
                          draw_sauce_banner, draw_help_overlay, draw_voicing_panel,
-                         draw_latency_slider, draw_perf_hud)
+                         draw_latency_slider, draw_perf_hud, draw_debug_gestures)
 
 
 DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
 DEBOUNCE_MAX  = 0.40   # 400ms — fort knox
-DEBOUNCE_DEFAULT = 0.12  # 120ms — unified settle window (gesture smoothers are fast, this is the only gate)
+DEBOUNCE_DEFAULT = 0.10  # 100ms — unified settle window (hysteresis handles noise, this is the only gate)
 TARGET_FPS = 30
 ALL_KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -316,12 +316,10 @@ def run_camera(config: dict):
     show_help = False
     show_voicings = False
     show_latency = False
+    show_debug = False
     debounce_time = DEBOUNCE_DEFAULT  # used by latency slider UI
 
-    default_left = LeftHandGesture(
-        flip_quality=False, velocity=80, add_7th=False,
-        add_9th=False, add_11th=False, add_13th=False, gesture_name="no hand"
-    )
+    # default_left is now handled inside interpret_left_hand()
 
     # Display FPS tracking
     display_fps = 0.0
@@ -356,8 +354,9 @@ def run_camera(config: dict):
         if left_hand:
             tracker.draw_landmarks(frame, left_hand, color=(255, 180, 0))
 
-        right_gesture = interpret_right_hand(right_hand) if right_hand else None
-        left_gesture  = interpret_left_hand(left_hand)  if left_hand  else default_left
+        # Gesture interpretation — persistence + hysteresis handled internally
+        right_gesture = interpret_right_hand(right_hand)
+        left_gesture  = interpret_left_hand(left_hand)
 
         last_velocity = left_gesture.velocity
         left_gesture_name = "~SAUCE~" if sauce_mode else left_gesture.gesture_name
@@ -425,6 +424,10 @@ def run_camera(config: dict):
                 face_fps=face.inference_fps if face else 0.0,
             )
             draw_latency_slider(frame, debounce_time, DEBOUNCE_MIN, DEBOUNCE_MAX)
+        if show_debug:
+            settle_progress = (now - desired_since) / max(debounce_time, 0.001) if desired_notes != (current_chord.get('notes', []) if current_chord else []) else 1.0
+            draw_debug_gestures(frame, right_gesture, left_gesture, desired_notes,
+                                current_chord.get('notes', []) if current_chord else [], settle_progress)
 
         cv2.imshow("MIDI Camera", frame)
 
@@ -447,6 +450,8 @@ def run_camera(config: dict):
             show_voicings = not show_voicings; show_help = False; show_latency = False
         elif key == ord('l'):
             show_latency = not show_latency; show_help = False
+        elif key == ord('`'):
+            show_debug = not show_debug
         elif key != 255:
             if show_latency:
                 step = 0.01

@@ -1,39 +1,43 @@
 """
 Gesture interpretation from hand landmarks.
 
-Right hand (user's left): finger counting -> scale degree (I-VII)
-Left hand (user's right): thumb = flip quality, fingers = stack extensions
-Tongue/jaw: sauce mode (handled in face_tracker, passed in from app.py)
+Architecture:
+  - Raw detection with HYSTERESIS (no smoothing buffers, no consensus voting).
+    Hysteresis alone prevents flicker without adding latency.
+  - The settle window in app.py is the ONLY stability gate.
+  - Hand persistence: holds last reading for a few frames when hand disappears.
 
-NOTE: Camera is mirrored. MediaPipe "Right" = user's left hand (degree).
-MediaPipe "Left" = user's right hand (modifier).
+Right hand (user's left / MediaPipe "Right"): finger count → degree I-VII
+Left hand (user's right / MediaPipe "Left"): thumb = flip, fingers = extensions
 """
 
 import math
 import time
-from collections import deque
 from dataclasses import dataclass
+from typing import Optional
 
 from core.hand_tracker import HandData
 
 
-# MediaPipe landmark indices
+# ── MediaPipe landmark indices ──
+
 WRIST = 0
-THUMB_TIP = 4
-INDEX_MCP, INDEX_PIP, INDEX_TIP = 5, 6, 8
-MIDDLE_PIP, MIDDLE_TIP = 10, 12
-RING_PIP, RING_TIP = 14, 16
-PINKY_MCP, PINKY_PIP, PINKY_TIP = 17, 18, 20
+THUMB_CMC, THUMB_MCP, THUMB_IP, THUMB_TIP = 1, 2, 3, 4
+INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP = 5, 6, 7, 8
+MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP = 9, 10, 11, 12
+RING_MCP, RING_PIP, RING_DIP, RING_TIP = 13, 14, 15, 16
+PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP = 17, 18, 19, 20
 
 FINGER_TIPS = [INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP]
 FINGER_PIPS = [INDEX_PIP, MIDDLE_PIP, RING_PIP, PINKY_PIP]
 
 
+# ── Data classes ──
+
 @dataclass
 class RightHandGesture:
-    degree: int
-    finger_count: int
-    is_transitioning: bool = False  # True when thumb/degree hasn't fully settled
+    degree: int           # 0=silence, 1-7=scale degree
+    finger_count: int     # raw finger count for display
 
 
 @dataclass
@@ -47,244 +51,209 @@ class LeftHandGesture:
     gesture_name: str
 
 
-# ── Smoothing buffers ──
-# Keep these SMALL — just enough to filter single-frame MediaPipe jitter.
-# The main settle window in app.py handles stability; these just denoise.
+# ── Helpers ──
 
-_right_history = deque(maxlen=5)
-_right_confirmed = 0
-_right_time = 0.0
-
-_left_fingers_history = deque(maxlen=5)
-_left_fingers_confirmed = 0
-_left_fingers_time = 0.0
-
-_left_thumb_history = deque(maxlen=6)
-_left_thumb_confirmed = False
-_left_thumb_time = 0.0
-
-
-def _smooth(history, confirmed, conf_time, raw, consensus, min_hold):
-    """Generic smoothing with consensus threshold and hold time."""
-    history.append(raw)
-    if len(history) < 3:
-        return confirmed, conf_time
-
-    counts = {}
-    for v in history:
-        counts[v] = counts.get(v, 0) + 1
-
-    dominant = max(counts, key=counts.get)
-    ratio = counts[dominant] / len(history)
-
-    if dominant != confirmed and ratio >= consensus:
-        now = time.time()
-        if now - conf_time >= min_hold:
-            return dominant, now
-
-    if counts.get(confirmed, 0) == 0:
-        return dominant, time.time()
-
-    return confirmed, conf_time
-
-
-# ── Detection helpers ──
-
-def _is_finger_extended(landmarks, tip_idx, pip_idx):
-    return landmarks[tip_idx][1] < landmarks[pip_idx][1] - 0.025
-
-
-def _count_fingers(landmarks):
-    extended = [_is_finger_extended(landmarks, t, p) for t, p in zip(FINGER_TIPS, FINGER_PIPS)]
-    return sum(extended), extended
-
-
-def _distance(p1, p2):
+def _dist(p1, p2):
     return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
 
-MIDDLE_MCP = 9
+def _palm_size(lm):
+    """Palm height (WRIST → MIDDLE_MCP) for normalization."""
+    d = _dist(lm[WRIST], lm[MIDDLE_MCP])
+    return max(d, 0.05)  # floor to avoid division issues
 
+
+# ── Finger detection with per-finger hysteresis ──
+
+class FingerDetector:
+    """
+    Per-finger hysteresis prevents individual finger flicker.
+    
+    Uses the gap between PIP joint and fingertip (in y-coords, normalized
+    by palm size). Different thresholds for extending vs retracting.
+    """
+    
+    # Thresholds are normalized by palm size
+    EXTEND_THRESH = 0.18    # gap needed to register as extended (stricter)
+    RETRACT_THRESH = 0.05   # gap needed to stay extended (more lenient)
+    
+    def __init__(self):
+        self._states = [False, False, False, False]  # index, middle, ring, pinky
+    
+    def update(self, landmarks) -> tuple[int, list[bool]]:
+        palm = _palm_size(landmarks)
+        
+        for i, (tip_idx, pip_idx) in enumerate(zip(FINGER_TIPS, FINGER_PIPS)):
+            # Positive gap = tip is above PIP = finger extended
+            gap = (landmarks[pip_idx][1] - landmarks[tip_idx][1]) / palm
+            
+            if self._states[i]:
+                # Currently extended — use lower threshold to stay
+                self._states[i] = gap > self.RETRACT_THRESH
+            else:
+                # Currently retracted — use higher threshold to extend
+                self._states[i] = gap > self.EXTEND_THRESH
+        
+        return sum(self._states), list(self._states)
+    
+    def reset(self):
+        self._states = [False, False, False, False]
+
+
+# ── Thumb detection with hysteresis ──
 
 class ThumbDetector:
     """
-    Hysteretic, palm-size-normalized thumb detection.
-
-    Normalizes thumb distances by palm height (WRIST→MIDDLE_MCP) so
-    detection is consistent regardless of how close/far the hand is
-    from the camera, and regardless of hand size.
-
-    Hysteresis: uses a higher threshold to enter "out" state than
-    to stay in it — prevents flicker in the mushy middle zone.
+    Hysteretic thumb detection normalized by palm size.
+    
+    No smoothing buffer — hysteresis alone prevents flicker.
+    The settle window in app.py handles stability.
     """
-
-    def __init__(self, thresh_out=0.50, thresh_in=0.38,
-                 history_len=12, consensus=0.65, min_hold=0.08):
-        """
-        thresh_out: normalized dist needed to ENTER "out" state (stricter)
-        thresh_in:  normalized dist needed to STAY "out" (more lenient)
-        Both thresholds are relative to palm height (WRIST→MIDDLE_MCP).
-        """
-        self.thresh_out = thresh_out
-        self.thresh_in  = thresh_in
-        self._history   = deque(maxlen=history_len)
-        self._consensus = consensus
-        self._min_hold  = min_hold
-        self._confirmed = False
-        self._conf_time = 0.0
-
-    @property
-    def is_out(self) -> bool:
-        return self._confirmed
-
-    def is_settled(self, min_frames: int = 8, min_consensus: float = 0.80) -> bool:
-        """True when the thumb state has been consistently stable for enough frames."""
-        if len(self._history) < min_frames:
-            return False
-        recent = list(self._history)[-min_frames:]
-        confirmations = sum(1 for v in recent if v == self._confirmed)
-        return (confirmations / min_frames) >= min_consensus
-
+    
+    def __init__(self, thresh_out=0.48, thresh_in=0.32):
+        self.thresh_out = thresh_out  # normalized dist to ENTER "out"
+        self.thresh_in  = thresh_in   # normalized dist to STAY "out"
+        self._is_out = False
+    
     def update(self, landmarks) -> bool:
-        raw = self._detect(landmarks)
-        self._confirmed, self._conf_time = _smooth(
-            self._history, self._confirmed, self._conf_time,
-            raw, self._consensus, self._min_hold,
-        )
-        return self._confirmed
-
+        palm = _palm_size(landmarks)
+        
+        # Distance from thumb tip to index MCP and middle MCP
+        nd_index  = _dist(landmarks[THUMB_TIP], landmarks[INDEX_MCP]) / palm
+        nd_middle = _dist(landmarks[THUMB_TIP], landmarks[MIDDLE_MCP]) / palm
+        
+        # Use the more generous of the two signals
+        signal = max(nd_index, nd_middle * 0.95)
+        
+        # Hysteresis
+        thresh = self.thresh_in if self._is_out else self.thresh_out
+        self._is_out = signal > thresh
+        
+        return self._is_out
+    
     def reset(self):
-        self._history.clear()
-        self._confirmed = False
-        self._conf_time = 0.0
-
-    def _detect(self, lm) -> bool:
-        # Normalize by palm size so results are scale-invariant
-        palm = _distance(lm[WRIST], lm[MIDDLE_MCP])
-        if palm < 0.01:
-            palm = 0.15  # fallback for degenerate frames
-
-        nd_index  = _distance(lm[THUMB_TIP], lm[INDEX_MCP])  / palm
-        nd_middle = _distance(lm[THUMB_TIP], lm[MIDDLE_MCP]) / palm
-
-        # Hysteresis: stay in current state unless signal is strong enough
-        thresh = self.thresh_in if self._confirmed else self.thresh_out
-
-        # OR vote: either signal alone is sufficient (belt-and-suspenders)
-        return nd_index > thresh or nd_middle > (thresh * 1.08)
+        self._is_out = False
 
 
-# Two detector instances — one per hand
-# Small buffers, no hold — just denoise. App.py settle window prevents glitches.
-_thumb_degree   = ThumbDetector(thresh_out=0.44, thresh_in=0.30, history_len=5, consensus=0.60, min_hold=0.0)
-_thumb_modifier = ThumbDetector(thresh_out=0.42, thresh_in=0.28, history_len=5, consensus=0.60, min_hold=0.0)
+# ── Hand persistence ──
 
-
-# ── Right hand (user's left): degree ──
-
-def interpret_right_hand(hand: HandData) -> RightHandGesture:
+class HandPersistence:
     """
-    Finger count -> scale degree.
-      Fist=silence, 1-3=I-III, 4(thumb tucked)=IV,
-      4(thumb out)=V, thumb only=VI, thumb+pinky=VII
+    Holds the last hand reading for a few frames when the hand disappears.
+    Prevents chord drops from single-frame detection misses.
     """
-    global _right_confirmed, _right_time
+    
+    def __init__(self, hold_frames: int = 3):
+        self._hold_frames = hold_frames
+        self._last_hand: Optional[HandData] = None
+        self._missing_count = 0
+    
+    def update(self, hand: Optional[HandData]) -> Optional[HandData]:
+        if hand is not None:
+            self._last_hand = hand
+            self._missing_count = 0
+            return hand
+        else:
+            self._missing_count += 1
+            if self._missing_count <= self._hold_frames and self._last_hand is not None:
+                return self._last_hand  # hold last reading
+            return None
+    
+    def reset(self):
+        self._last_hand = None
+        self._missing_count = 0
+
+
+# ── Module-level detectors ──
+
+_right_fingers = FingerDetector()
+_right_thumb = ThumbDetector(thresh_out=0.48, thresh_in=0.32)
+
+_left_fingers = FingerDetector()
+_left_thumb = ThumbDetector(thresh_out=0.44, thresh_in=0.28)  # more sensitive for modifier
+
+_right_persistence = HandPersistence(hold_frames=3)
+_left_persistence = HandPersistence(hold_frames=3)
+
+
+# ── Right hand: degree detection ──
+
+def interpret_right_hand(hand: Optional[HandData]) -> Optional[RightHandGesture]:
+    """
+    Finger count → scale degree. No smoothing — just hysteresis.
+    
+    Returns None if no hand detected (after persistence expires).
+    """
+    hand = _right_persistence.update(hand)
+    if hand is None:
+        return None
+    
     lm = hand.landmarks
-    finger_count, extended = _count_fingers(lm)
-
-    # Smoothed, hysteretic, palm-normalized thumb detection
-    thumb_out = _thumb_degree.update(lm)
-
+    finger_count, extended = _right_fingers.update(lm)
+    thumb_out = _right_thumb.update(lm)
+    
+    # Map to degree
     if finger_count == 0 and not thumb_out:
-        raw = 0                                                # fist = silence
+        degree = 0                                          # fist = silence
     elif finger_count == 0 and thumb_out:
-        raw = 6                                                # thumb only = VI
+        degree = 6                                          # thumb only = VI
     elif thumb_out and finger_count == 1 and extended[3] and not extended[0]:
-        raw = 7                                                # thumb + pinky = VII
+        degree = 7                                          # thumb + pinky = VII
     elif finger_count == 4:
-        raw = 5 if thumb_out else 4                           # V vs IV
-    elif not thumb_out:
-        raw = min(finger_count, 4)                            # I–III
+        degree = 5 if thumb_out else 4                     # open hand = V, 4 fingers = IV
+    elif finger_count <= 3:
+        degree = finger_count                              # I, II, III
     else:
-        raw = min(finger_count, 4)
+        degree = min(finger_count, 4)
+    
+    return RightHandGesture(degree=degree, finger_count=finger_count)
 
-    _right_confirmed, _right_time = _smooth(
-        _right_history, _right_confirmed, _right_time,
-        raw, consensus=0.60, min_hold=0.0,  # no hold — settle window in app.py handles timing
+
+# ── Left hand: modifier detection ──
+
+def interpret_left_hand(hand: Optional[HandData]) -> LeftHandGesture:
+    """
+    Thumb = flip quality, fingers = extensions. No smoothing.
+    
+    Returns default gesture if no hand detected.
+    """
+    _DEFAULT = LeftHandGesture(
+        flip_quality=False, velocity=80, add_7th=False,
+        add_9th=False, add_11th=False, add_13th=False, gesture_name="no hand"
     )
-    return RightHandGesture(degree=_right_confirmed, finger_count=finger_count)
-
-
-# ── Left hand (user's right): thumb flip + finger extensions ──
-
-def interpret_left_hand(hand: HandData) -> LeftHandGesture:
-    """
-    Thumb (smoothed separately) = flip chord quality.
-    Fingers (smoothed separately) = stack diatonic extensions.
-
-      Thumb out  = flip quality (I/IV/V -> minor, ii/iii/vi -> major)
-      Thumb in   = diatonic quality
-
-      0 fingers = triad
-      1 finger  = 7th
-      2 fingers = 9th (includes 7th)
-      3 fingers = 11th (includes 7th, 9th)
-      4 fingers = 13th (includes 7th, 9th, 11th)
-
-    Velocity from wrist height.
-    """
-    global _left_fingers_confirmed, _left_fingers_time
-    global _left_thumb_confirmed, _left_thumb_time
+    
+    hand = _left_persistence.update(hand)
+    if hand is None:
+        return _DEFAULT
+    
     lm = hand.landmarks
-
-    # Velocity
+    finger_count, _ = _left_fingers.update(lm)
+    flip = _left_thumb.update(lm)
+    
+    # Velocity from wrist height (higher hand = louder)
     velocity = max(40, min(127, int(127 - lm[WRIST][1] * 87)))
-
-    # Raw detection — thumb uses ThumbDetector (hysteresis + normalization)
-    # Fingers smoothed separately via legacy buffer
-    raw_thumb = _thumb_modifier.update(lm)
-    raw_fingers, _ = _count_fingers(lm)
-
-    # Thumb is handled by ThumbDetector — copy result into legacy buffer so
-    # _left_thumb_confirmed stays in sync for reset_gesture_state()
-    _left_thumb_history.append(raw_thumb)
-    _left_thumb_confirmed = raw_thumb
-    # Fingers: 60% consensus, no hold — settle window handles timing
-    _left_fingers_confirmed, _left_fingers_time = _smooth(
-        _left_fingers_history, _left_fingers_confirmed, _left_fingers_time,
-        raw_fingers, consensus=0.60, min_hold=0.0,
-    )
-
-    flip = _left_thumb_confirmed
-    fc = _left_fingers_confirmed
-
-    # Build name
+    
+    # Extensions stack
     ext_names = {0: "triad", 1: "7th", 2: "9th", 3: "11th", 4: "13th"}
-    name = ("flip " if flip else "") + ext_names.get(fc, "triad")
-
+    name = ("flip " if flip else "") + ext_names.get(finger_count, "triad")
+    
     return LeftHandGesture(
         flip_quality=flip,
         velocity=velocity,
-        add_7th=fc >= 1,
-        add_9th=fc >= 2,
-        add_11th=fc >= 3,
-        add_13th=fc >= 4,
+        add_7th=finger_count >= 1,
+        add_9th=finger_count >= 2,
+        add_11th=finger_count >= 3,
+        add_13th=finger_count >= 4,
         gesture_name=name,
     )
 
 
+# ── Reset ──
+
 def reset_gesture_state():
-    global _right_confirmed, _right_time
-    global _left_fingers_confirmed, _left_fingers_time
-    global _left_thumb_confirmed, _left_thumb_time
-    _right_history.clear()
-    _right_confirmed = 0
-    _right_time = 0.0
-    _left_fingers_history.clear()
-    _left_fingers_confirmed = 0
-    _left_fingers_time = 0.0
-    _left_thumb_history.clear()
-    _left_thumb_confirmed = False
-    _left_thumb_time = 0.0
-    _thumb_degree.reset()
-    _thumb_modifier.reset()
+    _right_fingers.reset()
+    _right_thumb.reset()
+    _left_fingers.reset()
+    _left_thumb.reset()
+    _right_persistence.reset()
+    _left_persistence.reset()

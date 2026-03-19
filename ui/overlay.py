@@ -105,6 +105,37 @@ def draw_controls_hint(frame):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (190, 190, 190), 1)
 
 
+def draw_debug_gestures(frame, right_gesture, left_gesture, desired_notes, playing_notes, settle_progress: float):
+    """Debug overlay showing raw gesture state — press D to toggle."""
+    fh, fw = frame.shape[:2]
+
+    lines = []
+    if right_gesture:
+        lines.append(f"R: degree={right_gesture.degree}  fingers={right_gesture.finger_count}")
+    else:
+        lines.append("R: no hand")
+    
+    lines.append(f"L: flip={left_gesture.flip_quality}  7={left_gesture.add_7th}  "
+                 f"9={left_gesture.add_9th}  11={left_gesture.add_11th}  13={left_gesture.add_13th}")
+    lines.append(f"Desired: {desired_notes}")
+    lines.append(f"Playing: {playing_notes}")
+    
+    # Settle progress bar
+    bar_pct = min(1.0, settle_progress)
+    bar_color = (80, 255, 130) if bar_pct >= 1.0 else (80, 180, 255)
+    lines.append(f"Settle: {'#' * int(bar_pct * 20)}{'.' * (20 - int(bar_pct * 20))} {bar_pct*100:.0f}%")
+
+    box_h = 20 + len(lines) * 20
+    box_w = 460
+    bx, by = 10, fh - box_h - 10
+
+    draw_semi_transparent_rect(frame, bx, by, box_w, box_h, (0, 0, 0), 0.85)
+    for i, line in enumerate(lines):
+        color = (180, 255, 180) if i < 2 else (200, 200, 200)
+        cv2.putText(frame, line, (bx + 10, by + 18 + i * 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
+
+
 def draw_perf_hud(frame, tier_name: str, display_fps: float,
                   hands_fps: float, face_fps: float):
     """Performance HUD — shown when L panel is open, above the latency slider."""
