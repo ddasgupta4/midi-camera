@@ -46,25 +46,45 @@ class VoicingEditor:
         self.selected_degree = 1
         self.selected_note = 0
 
+    TRIAD_SIZE = 3  # inversions always apply to the first 3 notes (triad) only
+
     def apply(self, notes: list, degree: int) -> list:
-        """Apply inversion and offsets to a note list."""
+        """
+        Apply inversion and offsets.
+        Inversions only affect the triad (first 3 notes).
+        Extensions (7th, 9th, 11th, 13th) always stack above the triad.
+        """
         if not notes:
             return notes
-        result = list(notes)
 
-        # Apply note offsets
+        # Split into triad and extensions
+        triad = list(notes[:self.TRIAD_SIZE])
+        extensions = list(notes[self.TRIAD_SIZE:])
+
+        # Apply note offsets to triad notes (by index)
         offsets = self.note_offsets.get(degree, {})
         for i, offset in offsets.items():
-            if i < len(result):
-                result[i] += offset
+            if i < len(triad):
+                triad[i] += offset
 
-        # Apply inversion: move bottom note(s) up an octave
-        inv = self.inversions.get(degree, 0) % max(1, len(result))
+        # Apply inversion: cycle bottom triad note up an octave
+        inv = self.inversions.get(degree, 0) % max(1, len(triad))
         for _ in range(inv):
-            result.sort()
-            result[0] += 12
-        result.sort()
-        return result
+            triad.sort()
+            triad[0] += 12
+        triad.sort()
+
+        # Ensure all extensions sit above the top triad note
+        if triad and extensions:
+            ceiling = max(triad)
+            adjusted = []
+            for e in sorted(extensions):
+                while e <= ceiling:
+                    e += 12
+                adjusted.append(e)
+            extensions = sorted(adjusted)
+
+        return triad + extensions
 
     def invert(self, degree: int, direction: int = 1):
         """Cycle inversion up or down."""
@@ -217,11 +237,14 @@ class DegradationMonitor:
         if now - self._last_warn < self.WARN_COOLDOWN:
             return
 
-        # First bump face skip, then drop tier
+        # If base tier is HIGH, never downgrade tier label — just boost face skip
+        # HIGH machines should always show HIGH regardless of transient slowdowns
+        base_is_high = self.settings.tier == Tier.HIGH
+
         if self._face_skip_boost < 8:
             self._face_skip_boost += 2
             print(f"[perf] inference behind, face skip → {self.effective_face_skip}")
-        else:
+        elif not base_is_high:
             tier_order = [Tier.HIGH, Tier.MEDIUM, Tier.LOW]
             current = self._degraded_tier or self.settings.tier
             idx = tier_order.index(current)
@@ -274,7 +297,7 @@ def run_camera(config: dict):
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     cv2.namedWindow("MIDI Camera", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("MIDI Camera", 960, 720)
+    cv2.resizeWindow("MIDI Camera", 640, 480)  # display smaller; capture stays 960x720
 
     current_chord = None
     pending_degree = 0

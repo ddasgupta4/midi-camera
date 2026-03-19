@@ -164,8 +164,11 @@ class ThumbDetector:
 
 
 # Two detector instances — one per hand, different sensitivity
-_thumb_degree   = ThumbDetector(thresh_out=0.50, thresh_in=0.38, history_len=12, consensus=0.65, min_hold=0.08)
-_thumb_modifier = ThumbDetector(thresh_out=0.46, thresh_in=0.34, history_len=10, consensus=0.62, min_hold=0.07)
+# Degree hand: needs to reliably distinguish IV (thumb in) vs V (thumb out)
+# Lower thresh + faster response = more decisive switching
+_thumb_degree   = ThumbDetector(thresh_out=0.44, thresh_in=0.30, history_len=10, consensus=0.60, min_hold=0.06)
+# Modifier hand: flip quality — a bit more lenient to enter, same to hold
+_thumb_modifier = ThumbDetector(thresh_out=0.42, thresh_in=0.28, history_len=10, consensus=0.60, min_hold=0.06)
 
 
 # ── Right hand (user's left): degree ──
