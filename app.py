@@ -626,6 +626,11 @@ def run_camera(config: dict):
             _save_config({'style_mode': style_mode})
             midi.all_notes_off(); current_chord = None
             print(f"[*] Style mode: {style_mode.upper()}")
+        elif key == ord(';'):
+            # Manual sauce toggle (for testing / when face detection is iffy)
+            if style_mode == 'andrew':
+                sauce_mode = not sauce_mode
+                print(f"[*] Sauce: {'ON' if sauce_mode else 'OFF'} (manual toggle)")
         elif key != 255:
             if show_latency:
                 step = 0.01
@@ -733,7 +738,8 @@ def _save_config(cfg: dict):
 def main():
     config = _load_config()
     print(f"[*] Starting: Key={config['key']} Mode={config['mode']} "
-          f"Ch={config['channel']+1} Oct={config['octave']} Cam={config['camera']}")
+          f"Ch={config['channel']+1} Oct={config['octave']} Cam={config['camera']} "
+          f"Style={config.get('style_mode', 'andrew')}")
     run_camera(config)
     print("[*] MIDI Camera closed.")
 
