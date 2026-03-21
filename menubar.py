@@ -123,10 +123,11 @@ class MidiCameraApp(rumps.App):
         self.cfg = load_config()
         self.cameras = detect_cameras()
 
-        # Always auto-detect best camera (saved index may be stale)
-        detected = best_camera(self.cameras)
-        if self.cfg['camera'] == -1 or self.cfg['camera'] != detected:
-            self.cfg['camera'] = detected
+        # Auto-detect only on first run or if saved camera isn't available
+        saved_cam = self.cfg.get('camera', -1)
+        available_indices = [idx for idx, _ in self.cameras]
+        if saved_cam == -1 or saved_cam not in available_indices:
+            self.cfg['camera'] = best_camera(self.cameras)
             save_config(self.cfg)
 
         self._proc = None

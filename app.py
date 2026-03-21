@@ -673,20 +673,44 @@ def _midi_name(midi_num: int) -> str:
 def _load_config() -> dict:
     """Load config.json if it exists, otherwise use defaults."""
     import json, os
-    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': 1, 'smart_extensions': True, 'style_mode': 'andrew'}
+    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': -1, 'smart_extensions': True, 'style_mode': 'andrew'}
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     if os.path.exists(config_path):
         try:
             with open(config_path) as f:
                 saved = json.load(f)
             cfg = {**defaults, **saved}
-            # camera -1 means auto; fall back to 1 (built-in on most Macs)
-            if cfg.get('camera', -1) == -1:
-                cfg['camera'] = 1
-            return cfg
         except Exception as e:
             print(f"[!] Could not read config.json: {e}, using defaults")
-    return defaults
+            cfg = defaults
+    else:
+        cfg = defaults
+
+    # Validate camera — test if saved index actually opens
+    cam_idx = cfg.get('camera', -1)
+    if cam_idx >= 0:
+        import cv2 as _cv2
+        _cap = _cv2.VideoCapture(cam_idx)
+        if _cap.isOpened():
+            _cap.release()
+        else:
+            print(f"[!] Saved camera {cam_idx} not available, auto-detecting...")
+            cam_idx = -1
+            _cap.release()
+
+    if cam_idx < 0:
+        # Auto-detect: try to import menubar's best_camera, fallback to probing
+        try:
+            from menubar import detect_cameras, best_camera
+            cams = detect_cameras()
+            cam_idx = best_camera(cams)
+        except Exception:
+            cam_idx = 1  # fallback to typical FaceTime index
+        cfg['camera'] = cam_idx
+        _save_config({'camera': cam_idx})
+        print(f"[*] Auto-detected camera: {cam_idx}")
+
+    return cfg
 
 
 def _save_config(cfg: dict):
