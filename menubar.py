@@ -203,6 +203,12 @@ class MidiCameraApp(rumps.App):
 
         self.menu.add(rumps.separator)
 
+        # Update
+        self._update_item = rumps.MenuItem("Check for Updates", callback=self.check_update)
+        self.menu.add(self._update_item)
+
+        self.menu.add(rumps.separator)
+
         # Launch / Stop
         self._launch_item = rumps.MenuItem("▶  Launch", callback=self.toggle_launch)
         self.menu.add(self._launch_item)
@@ -321,6 +327,60 @@ class MidiCameraApp(rumps.App):
         self._proc = None
         self._launch_item.title = "▶  Launch"
         self.title = "🎹"
+
+    def check_update(self, _):
+        """Check for updates and apply if available."""
+        import threading
+
+        def _do_update():
+            try:
+                repo_dir = os.path.dirname(os.path.abspath(__file__))
+                # Fetch remote
+                result = subprocess.run(
+                    ['git', 'fetch', '--quiet'],
+                    cwd=repo_dir, capture_output=True, text=True, timeout=15
+                )
+                if result.returncode != 0:
+                    rumps.notification("MIDI Camera", "", "Failed to check for updates.")
+                    return
+
+                # Compare local vs remote
+                local = subprocess.run(
+                    ['git', 'rev-parse', 'HEAD'],
+                    cwd=repo_dir, capture_output=True, text=True
+                ).stdout.strip()
+                remote = subprocess.run(
+                    ['git', 'rev-parse', 'origin/master'],
+                    cwd=repo_dir, capture_output=True, text=True
+                ).stdout.strip()
+
+                if local == remote:
+                    rumps.notification("MIDI Camera", "", "Already up to date!")
+                    return
+
+                # Pull
+                result = subprocess.run(
+                    ['git', 'pull', '--ff-only'],
+                    cwd=repo_dir, capture_output=True, text=True, timeout=30
+                )
+                if result.returncode != 0:
+                    rumps.notification("MIDI Camera", "", "Update failed — try running update.sh manually.")
+                    return
+
+                # Reinstall deps
+                venv_pip = os.path.join(repo_dir, '.venv', 'bin', 'pip')
+                subprocess.run(
+                    [venv_pip, 'install', '-r', 'requirements.txt', '-q'],
+                    cwd=repo_dir, capture_output=True, timeout=120
+                )
+
+                rumps.notification("MIDI Camera", "", "Updated! Restart the app to use new version.")
+                self._update_item.title = "✓ Updated — Restart to Apply"
+
+            except Exception as e:
+                rumps.notification("MIDI Camera", "", f"Update error: {e}")
+
+        threading.Thread(target=_do_update, daemon=True).start()
 
     def quit_app(self, _):
         self._stop()
