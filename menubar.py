@@ -149,9 +149,9 @@ class MidiCameraApp(rumps.App):
         for cv_idx, name in self.cameras:
             item = rumps.MenuItem(
                 name,
-                callback=self._make_camera_cb(cv_idx)
+                callback=self._make_camera_cb(cv_idx, name)
             )
-            if cv_idx == self.cfg['camera']:
+            if name == self.cfg.get('camera_name', '') or (not self.cfg.get('camera_name') and cv_idx == self.cfg.get('camera', -1)):
                 item.state = 1
             cam_menu.add(item)
         self.menu.add(cam_menu)
@@ -226,10 +226,11 @@ class MidiCameraApp(rumps.App):
 
     # ── Callbacks ──────────────────────────────────────────────────────────────
 
-    def _make_camera_cb(self, cv_idx):
+    def _make_camera_cb(self, cv_idx, cam_name=''):
         def cb(sender):
             self._set_checked_in_submenu(sender, "Camera")
             self.cfg['camera'] = cv_idx
+            self.cfg['camera_name'] = cam_name
             save_config(self.cfg)
         return cb
 

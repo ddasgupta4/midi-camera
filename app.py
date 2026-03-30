@@ -642,29 +642,40 @@ def _load_config() -> dict:
     else:
         cfg = defaults
 
-    # Validate camera — test if saved index actually opens
-    cam_idx = cfg.get('camera', -1)
-    if cam_idx >= 0:
-        import cv2 as _cv2
-        _cap = _cv2.VideoCapture(cam_idx)
-        if _cap.isOpened():
-            _cap.release()
-        else:
-            print(f"[!] Saved camera {cam_idx} not available, auto-detecting...")
-            cam_idx = -1
-            _cap.release()
+    # Resolve camera by NAME (indices shift between reboots)
+    try:
+        from menubar import detect_cameras, best_camera
+        cams = detect_cameras()
+    except Exception:
+        cams = []
 
+    saved_name = cfg.get('camera_name', '')
+    cam_idx = -1
+
+    # Try to find saved camera by name
+    if saved_name:
+        for idx, name in cams:
+            if name == saved_name:
+                cam_idx = idx
+                break
+        if cam_idx < 0:
+            print(f"[!] Saved camera '{saved_name}' not found, auto-detecting...")
+
+    # Fallback: auto-detect best camera
     if cam_idx < 0:
-        # Auto-detect: try to import menubar's best_camera, fallback to probing
-        try:
-            from menubar import detect_cameras, best_camera
-            cams = detect_cameras()
+        if cams:
             cam_idx = best_camera(cams)
-        except Exception:
-            cam_idx = 1  # fallback to typical FaceTime index
-        cfg['camera'] = cam_idx
-        _save_config({'camera': cam_idx})
-        print(f"[*] Auto-detected camera: {cam_idx}")
+            # Save the name for next time
+            for idx, name in cams:
+                if idx == cam_idx:
+                    cfg['camera_name'] = name
+                    break
+        else:
+            cam_idx = 0  # last resort
+        _save_config({'camera_name': cfg.get('camera_name', ''), 'camera': cam_idx})
+        print(f"[*] Auto-detected camera: {cam_idx} ({cfg.get('camera_name', '?')})")
+
+    cfg['camera'] = cam_idx
 
     return cfg
 
