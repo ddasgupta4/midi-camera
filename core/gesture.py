@@ -39,6 +39,7 @@ class RightHandGesture:
     degree: int           # 0=silence, 1-7=scale degree
     finger_count: int     # raw finger count for display
     wrist_y: float = 0.5  # normalized wrist Y (0=top, 1=bottom) for velocity
+    wrist_x: float = 0.5  # normalized wrist X (0=left, 1=right) for position
 
 
 @dataclass
@@ -219,7 +220,7 @@ def interpret_right_hand(hand: Optional[HandData]) -> Optional[RightHandGesture]
     else:
         degree = min(finger_count, 4)
     
-    return RightHandGesture(degree=degree, finger_count=finger_count, wrist_y=lm[WRIST][1])
+    return RightHandGesture(degree=degree, finger_count=finger_count, wrist_y=lm[WRIST][1], wrist_x=lm[WRIST][0])
 
 
 # ── Left hand: raw state ──
@@ -242,6 +243,8 @@ def get_left_hand_raw(hand: Optional[HandData]) -> Optional[dict]:
         'thumb_out': thumb_out,
         'velocity': velocity,
         'extended': extended,
+        'wrist_x': lm[WRIST][0],
+        'wrist_y': lm[WRIST][1],
     }
 
 

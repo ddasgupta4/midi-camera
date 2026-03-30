@@ -16,7 +16,7 @@ from core.mode_manager import ModeManager
 from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
                          draw_sauce_banner, draw_help_overlay, draw_voicing_panel,
                          draw_latency_slider, draw_perf_hud, draw_debug_gestures,
-                         draw_bass_pedal_panel)
+                         draw_bass_pedal_panel, draw_cc_card, draw_drum_card)
 
 
 DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
@@ -507,14 +507,30 @@ def run_camera(config: dict):
         now = time.time()
         result = mode.process_frame(right_gesture, left_hand, sauce_from_face, engine, midi, now)
 
-        # ── Draw overlay ──
-        draw_chord_card(
-            frame, chord_info=result.get('chord_info', {}),
-            key_display=engine.get_key_display(),
-            mode_display=engine.get_mode_display(),
-            velocity=result.get('velocity', 80),
-            left_gesture=result.get('left_gesture_name', ''),
-        )
+        # ── Draw overlay ── dispatch by mode type
+        result_type = result.get('type', 'chord')
+        if result_type == 'mapper':
+            draw_cc_card(
+                frame, cc_display=result.get('cc_display', []),
+                key_display=engine.get_key_display(),
+                mode_display=engine.get_mode_display(),
+                left_gesture=result.get('left_gesture_name', ''),
+            )
+        elif result_type == 'drums':
+            draw_drum_card(
+                frame, result=result,
+                key_display=engine.get_key_display(),
+                mode_display=engine.get_mode_display(),
+                left_gesture=result.get('left_gesture_name', ''),
+            )
+        else:
+            draw_chord_card(
+                frame, chord_info=result.get('chord_info', {}),
+                key_display=engine.get_key_display(),
+                mode_display=engine.get_mode_display(),
+                velocity=result.get('velocity', 80),
+                left_gesture=result.get('left_gesture_name', ''),
+            )
         draw_status(
             frame, midi.connected,
             smart_extensions=getattr(mode, 'smart_extensions', None),

@@ -405,6 +405,132 @@ def draw_voicing_panel(frame, chord_engine, voicing_editor, sauce_mode: bool):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.40, (130, 130, 130), 1)
 
 
+def draw_cc_card(frame, cc_display: list, key_display: str, mode_display: str, left_gesture: str = ""):
+    """Bottom-left card for MIDI Mapper mode — shows CC values with bar graphs."""
+    fh, fw = frame.shape[:2]
+
+    card_w = 390
+    card_h = 260
+    card_x = 15
+    card_y = fh - card_h - 15
+    pad = 18
+
+    draw_semi_transparent_rect(frame, card_x, card_y, card_w, card_h, (15, 15, 15), 0.82)
+    cv2.rectangle(frame, (card_x, card_y), (card_x + card_w, card_y + card_h), (90, 90, 90), 1)
+
+    tx = card_x + pad
+    ty = card_y + pad + 8
+
+    cv2.putText(frame, "MIDI CC MAPPER", (tx, ty),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 220, 255), 1)
+
+    bar_w = card_w - pad * 2 - 80
+    bar_h = 12
+
+    for i, cc in enumerate(cc_display):
+        y = ty + 30 + i * 30
+        label = f"CC{cc['cc']:>2} {cc['name']:<6}"
+        cv2.putText(frame, label, (tx, y + 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+
+        # Bar background
+        bx = tx + 110
+        cv2.rectangle(frame, (bx, y), (bx + bar_w, y + bar_h), (40, 40, 40), -1)
+
+        # Bar fill
+        fill = int((cc['value'] / 127) * bar_w)
+        g = min(255, cc['value'] * 2)
+        r = max(0, 255 - cc['value'] * 2)
+        cv2.rectangle(frame, (bx, y), (bx + fill, y + bar_h), (0, g, r), -1)
+
+        # Value text
+        cv2.putText(frame, str(cc['value']), (bx + bar_w + 6, y + 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+
+    # Key / mode + left gesture at bottom
+    by = ty + 30 + len(cc_display) * 30 + 10
+    cv2.putText(frame, f"{key_display} {mode_display}", (tx, by),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
+    if left_gesture:
+        cv2.putText(frame, left_gesture, (tx + 160, by),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, (130, 130, 130), 1)
+
+
+def draw_drum_card(frame, result: dict, key_display: str, mode_display: str, left_gesture: str = ""):
+    """Bottom-left card for drum modes — shows recent hits and pad/zone state."""
+    fh, fw = frame.shape[:2]
+
+    card_w = 390
+    card_h = 215
+    card_x = 15
+    card_y = fh - card_h - 15
+    pad = 18
+
+    draw_semi_transparent_rect(frame, card_x, card_y, card_w, card_h, (15, 15, 15), 0.82)
+    cv2.rectangle(frame, (card_x, card_y), (card_x + card_w, card_y + card_h), (90, 90, 90), 1)
+
+    tx = card_x + pad
+    ty = card_y + pad + 8
+
+    layout = result.get('drum_layout', 'finger')
+    hits = result.get('drum_hits', [])
+
+    # Title
+    cv2.putText(frame, f"DRUMS ({layout.upper()})", (tx, ty),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 180, 80), 1)
+
+    # Last hits — big text
+    hit_str = '  '.join(hits[-4:]) if hits else "---"
+    cv2.putText(frame, hit_str, (tx, ty + 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (80, 255, 160), 2)
+
+    # Layout-specific display
+    if layout == 'finger':
+        pads = result.get('drum_pads', [])
+        # Show pads as grid
+        for i, pad_info in enumerate(pads):
+            col = i % 4
+            row = i // 4
+            px = tx + col * 88
+            py = ty + 75 + row * 35
+            color = (80, 255, 160) if pad_info['active'] else (70, 70, 70)
+            label = f"{pad_info['side']}:{pad_info['name']}"
+            cv2.putText(frame, label, (px, py),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, color, 1)
+
+    elif layout == 'zone':
+        grid = result.get('zone_grid', [])
+        active = result.get('active_zones', [])
+        for row_idx, row in enumerate(grid):
+            for col_idx, name in enumerate(row):
+                px = tx + col_idx * 88
+                py = ty + 75 + row_idx * 30
+                is_active = (row_idx, col_idx) in [(r, c) for r, c in active]
+                color = (80, 255, 160) if is_active else (100, 100, 100)
+                cv2.putText(frame, name, (px, py),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1 + int(is_active))
+
+    elif layout == 'strike':
+        zones = result.get('strike_zones', {})
+        y_off = ty + 75
+        for hand, zone_list in zones.items():
+            label = f"{'R' if hand == 'right' else 'L'} hand:"
+            cv2.putText(frame, label, (tx, y_off),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+            for j, z in enumerate(zone_list):
+                px = tx + 90 + j * 100
+                cv2.putText(frame, f"[{z['side']}] {z['name']}", (px, y_off),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 220, 255), 1)
+            y_off += 28
+
+    # Key / mode
+    cv2.putText(frame, f"{key_display} {mode_display}", (tx, ty + 165),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
+    if left_gesture:
+        cv2.putText(frame, left_gesture, (tx + 180, ty + 165),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, (130, 130, 130), 1)
+
+
 def draw_bass_pedal_panel(frame, bp):
     """Bass note & pedal tones panel — press P to toggle."""
     fh, fw = frame.shape[:2]
