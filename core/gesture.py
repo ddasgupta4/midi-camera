@@ -38,6 +38,7 @@ FINGER_PIPS = [INDEX_PIP, MIDDLE_PIP, RING_PIP, PINKY_PIP]
 class RightHandGesture:
     degree: int           # 0=silence, 1-7=scale degree
     finger_count: int     # raw finger count for display
+    wrist_y: float = 0.5  # normalized wrist Y (0=top, 1=bottom) for velocity
 
 
 @dataclass
@@ -218,7 +219,30 @@ def interpret_right_hand(hand: Optional[HandData]) -> Optional[RightHandGesture]
     else:
         degree = min(finger_count, 4)
     
-    return RightHandGesture(degree=degree, finger_count=finger_count)
+    return RightHandGesture(degree=degree, finger_count=finger_count, wrist_y=lm[WRIST][1])
+
+
+# ── Left hand: raw state ──
+
+def get_left_hand_raw(hand: Optional[HandData]) -> Optional[dict]:
+    """
+    Get raw left hand state after persistence + hysteresis.
+    Returns dict with finger_count, thumb_out, velocity, or None if no hand.
+    Used by non-chord modes that interpret the left hand differently.
+    """
+    hand = _left_persistence.update(hand)
+    if hand is None:
+        return None
+    lm = hand.landmarks
+    finger_count, extended = _left_fingers.update(lm)
+    thumb_out = _left_thumb.update(lm)
+    velocity = max(40, min(127, int(127 - lm[WRIST][1] * 87)))
+    return {
+        'finger_count': finger_count,
+        'thumb_out': thumb_out,
+        'velocity': velocity,
+        'extended': extended,
+    }
 
 
 # ── Left hand: modifier detection ──
@@ -238,16 +262,13 @@ def interpret_left_hand(hand: Optional[HandData], style_mode: str = 'andrew') ->
         gesture_name="no hand"
     )
 
-    hand = _left_persistence.update(hand)
-    if hand is None:
+    raw = get_left_hand_raw(hand)
+    if raw is None:
         return _DEFAULT
 
-    lm = hand.landmarks
-    finger_count, _ = _left_fingers.update(lm)
-    flip = _left_thumb.update(lm)
-
-    # Velocity from wrist height (higher hand = louder)
-    velocity = max(40, min(127, int(127 - lm[WRIST][1] * 87)))
+    finger_count = raw['finger_count']
+    flip = raw['thumb_out']
+    velocity = raw['velocity']
 
     if style_mode == 'dylan':
         # Dylan Mode: 0=triad 1=7th 2=add9(no 7) 3=sus4 4=9th(7+9)

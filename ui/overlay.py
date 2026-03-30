@@ -74,7 +74,8 @@ def draw_chord_card(frame, chord_info: dict, key_display: str, mode_display: str
     cv2.rectangle(frame, (tx, bar_y), (tx + fill, bar_y + bar_h), (0, g, r), -1)
 
 
-def draw_status(frame, midi_connected: bool, smart_extensions: bool = True, style_mode: str = 'andrew'):
+def draw_status(frame, midi_connected: bool, smart_extensions: bool = True,
+                mode_name: str = '', mode_index: int = 0, mode_count: int = 1):
     """MIDI status — top right."""
     fh, fw = frame.shape[:2]
     label = "MIDI: Connected" if midi_connected else "MIDI: Off"
@@ -85,21 +86,30 @@ def draw_status(frame, midi_connected: bool, smart_extensions: bool = True, styl
     draw_semi_transparent_rect(frame, tx - 10, ty - 24, sz[0] + 20, 34, (15, 15, 15), 0.65)
     cv2.putText(frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 1)
 
-    # Style mode badge
-    mode_label = "ANDREW MODE" if style_mode == 'andrew' else "DYLAN MODE"
-    mode_color = (180, 130, 255) if style_mode == 'andrew' else (100, 220, 255)
+    # Mode badge — show name and index
+    mode_label = f"{mode_index + 1}/{mode_count} {mode_name.upper()}"
+    # Cycle colors for modes
+    mode_colors = [
+        (180, 130, 255),  # purple
+        (100, 220, 255),  # cyan
+        (255, 200, 80),   # gold
+        (130, 255, 130),  # green
+        (255, 130, 160),  # pink
+    ]
+    mode_color = mode_colors[mode_index % len(mode_colors)]
     msz = cv2.getTextSize(mode_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
     mx = fw - msz[0] - 18
     my = ty + 22
     cv2.putText(frame, mode_label, (mx, my), cv2.FONT_HERSHEY_SIMPLEX, 0.5, mode_color, 1)
 
-    # Smart extensions indicator
-    ext_label = "EXT: smart" if smart_extensions else "EXT: retrigger"
-    ext_color = (180, 220, 255) if smart_extensions else (140, 140, 140)
-    esz = cv2.getTextSize(ext_label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
-    ex = fw - esz[0] - 18
-    ey = my + 20
-    cv2.putText(frame, ext_label, (ex, ey), cv2.FONT_HERSHEY_SIMPLEX, 0.45, ext_color, 1)
+    # Smart extensions indicator (only shown when relevant)
+    if smart_extensions is not None:
+        ext_label = "EXT: smart" if smart_extensions else "EXT: retrigger"
+        ext_color = (180, 220, 255) if smart_extensions else (140, 140, 140)
+        esz = cv2.getTextSize(ext_label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
+        ex = fw - esz[0] - 18
+        ey = my + 20
+        cv2.putText(frame, ext_label, (ex, ey), cv2.FONT_HERSHEY_SIMPLEX, 0.45, ext_color, 1)
 
 
 def draw_controls_hint(frame):
@@ -131,8 +141,11 @@ def draw_debug_gestures(frame, right_gesture, left_gesture, desired_notes, playi
     else:
         lines.append("R: no hand")
     
-    lines.append(f"L: flip={left_gesture.flip_quality}  7={left_gesture.add_7th}  "
-                 f"9={left_gesture.add_9th}  11={left_gesture.add_11th}  13={left_gesture.add_13th}  sus4={left_gesture.add_sus4}")
+    if left_gesture:
+        lines.append(f"L: flip={left_gesture.flip_quality}  7={left_gesture.add_7th}  "
+                     f"9={left_gesture.add_9th}  11={left_gesture.add_11th}  13={left_gesture.add_13th}  sus4={left_gesture.add_sus4}")
+    else:
+        lines.append("L: (via mode)")
     lines.append(f"L thumb signal: {thumb_signal:.3f}")
     lines.append(f"Desired: {desired_notes}")
     lines.append(f"Playing: {playing_notes}")
@@ -253,8 +266,8 @@ def draw_sauce_banner(frame):
     cv2.putText(frame, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 220, 255), 2)
 
 
-def draw_help_overlay(frame):
-    """Full help screen — press H to toggle."""
+def draw_help_overlay(frame, mode_sections=None):
+    """Full help screen — press H to toggle. mode_sections from current mode."""
     fh, fw = frame.shape[:2]
 
     # Dark overlay over whole frame
@@ -265,44 +278,21 @@ def draw_help_overlay(frame):
     cv2.putText(frame, title, ((fw - sz[0]) // 2, 60),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
 
-    sections = [
-        ("RIGHT HAND (degree)", [
-            "Fist            =  Silence",
-            "1 finger        =  Chord I",
-            "2 fingers       =  Chord II",
-            "3 fingers       =  Chord III",
-            "4 fingers       =  Chord IV  (thumb tucked)",
-            "Open hand       =  Chord V",
-            "Thumb only      =  Chord VI",
-            "Thumb + pinky   =  Chord VII",
-        ]),
-        ("LEFT HAND (modifier)", [
-            "Fist            =  Triad (no extension)",
-            "Thumb out       =  Flip quality  (maj↔min)",
-            "1 finger        =  Add 7th",
-            "2 fingers       =  Add 9th",
-            "3 fingers       =  Add 11th",
-            "4 fingers       =  Add 13th",
-            "Wrist height    =  Velocity",
-        ]),
-        ("KEYBOARD", [
-            "A S D F G H J   =  C D E F G A B",
-            "W E   T Y U     =  C# D#  F# G# A#",
-            "Z / X           =  Octave down / up",
-            "M               =  Toggle major / minor",
-            "< / >           =  Key chromatic shift",
-            "V               =  Voicing panel",
-            "P               =  Bass/pedal panel",
-            "L               =  Latency slider",
-            ".               =  Toggle smart extensions",
-            "/               =  Toggle Andrew / Dylan mode",
-            "H               =  This help screen",
-            "Q / ESC         =  Quit / Config",
-        ]),
-        ("SAUCE MODE", [
-            "Open mouth      =  Toggle sauce mode (saucy jazz voicings)",
-        ]),
-    ]
+    # Mode-specific sections first, then keyboard
+    sections = list(mode_sections or [])
+    sections.append(("KEYBOARD", [
+        "A S D F G H J   =  C D E F G A B",
+        "W E   T Y U     =  C# D#  F# G# A#",
+        "Z / X           =  Octave down / up",
+        "M               =  Toggle major / minor",
+        "< / >           =  Key chromatic shift",
+        "V               =  Voicing panel",
+        "P               =  Bass/pedal panel",
+        "L               =  Latency slider",
+        "/               =  Cycle mode   1-9 = select",
+        "H               =  This help screen",
+        "Q / ESC         =  Quit / Config",
+    ]))
 
     col_x = [60, fw // 2 + 20]
     row_y = 110
@@ -326,7 +316,7 @@ def draw_help_overlay(frame):
         row_y = y + 20 if col == 1 else row_y
         col = 1 - col  # alternate columns
 
-    cv2.putText(frame, "Press H to close", ((fw - 200) // 2, fh - 20),
+    cv2.putText(frame, "Press H to close  |  / = cycle mode", ((fw - 380) // 2, fh - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (130, 130, 130), 1)
 
 

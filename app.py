@@ -8,9 +8,11 @@ import cv2
 from core.performance import get_tier, print_tier_info, Tier, TIER_CONFIGS
 from core.hand_tracker import HandTracker
 from core.face_tracker import FaceTracker
-from core.gesture import interpret_right_hand, interpret_left_hand, reset_gesture_state
+from core.gesture import interpret_right_hand, reset_gesture_state
 from core.chord_engine import ChordEngine
 from core.midi_output import MidiOutput
+from core.modes import get_all_modes
+from core.mode_manager import ModeManager
 from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
                          draw_sauce_banner, draw_help_overlay, draw_voicing_panel,
                          draw_latency_slider, draw_perf_hud, draw_debug_gestures,
@@ -418,6 +420,23 @@ def run_camera(config: dict):
     bp = BassAndPedals()
     degradation = DegradationMonitor(tier)
 
+    # ── Mode system ──
+    modes = get_all_modes(voicing_editor=ve, bass_pedals=bp)
+
+    # Resolve initial mode from config (backwards-compatible with style_mode)
+    initial_mode_index = config.get('mode_index', None)
+    if initial_mode_index is None:
+        # Legacy: map style_mode to index
+        style = config.get('style_mode', 'andrew')
+        initial_mode_index = 1 if style == 'dylan' else 0
+    mode_mgr = ModeManager(modes, initial_index=initial_mode_index)
+
+    # Apply saved smart_extensions to chord modes
+    saved_smart_ext = config.get('smart_extensions', True)
+    for m in modes:
+        if m.supports_smart_extensions:
+            m.smart_extensions = saved_smart_ext
+
     try:
         face = FaceTracker(frame_skip=tier.face_frame_skip)
         print("[*] Face tracker loaded (tongue = sauce mode)")
@@ -439,30 +458,11 @@ def run_camera(config: dict):
     cv2.namedWindow("MIDI Camera", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("MIDI Camera", 640, 480)  # display smaller; capture stays 960x720
 
-    current_chord = None
-    last_velocity = 80
-    left_gesture_name = ""
-    sauce_mode = False
-
-    # ── Unified chord settle ──
-    # Every frame we compute what chord SHOULD play. If it differs from
-    # what's currently sounding, we wait for it to stay stable for SETTLE_MS
-    # before firing. This kills all intermediate chord glitches in one shot.
-    desired_notes = []           # what the gesture system wants right now
-    desired_info = {}            # chord info for the desired chord
-    desired_since = 0.0          # when desired_notes last changed
-    # SETTLE_MS is controlled by the latency slider (L key)
-    # debounce_time doubles as the settle window
     show_help = False
     show_voicings = False
     show_latency = False
     show_debug = False
     show_bass_pedals = False
-    smart_extensions = config.get('smart_extensions', True)  # diff-only on extension changes
-    style_mode = config.get('style_mode', 'andrew')          # 'andrew' or 'dylan'
-    debounce_time = DEBOUNCE_DEFAULT  # used by latency slider UI
-
-    # default_left is now handled inside interpret_left_hand()
 
     # Display FPS tracking
     display_fps = 0.0
@@ -471,8 +471,9 @@ def run_camera(config: dict):
 
     frame_time = 1.0 / TARGET_FPS
     print(f"[*] MIDI Camera running — Key: {engine.get_key_display()} {engine.get_mode_display()}")
+    print(f"[*] Mode: {mode_mgr.current_mode.name} ({mode_mgr.current_index + 1}/{len(modes)})")
     print(f"[*] MIDI port: {'MIDI Camera' if midi_ok else 'NOT CONNECTED'}")
-    print("[*] Press H for help, V for voicings, Q to quit")
+    print("[*] Press H for help, / to cycle mode, Q to quit")
 
     while True:
         t_start = time.time()
@@ -480,16 +481,16 @@ def run_camera(config: dict):
         if not ret: break
 
         frame = cv2.flip(frame, 1)
+        mode = mode_mgr.current_mode
 
         # Submit frame to threaded hand tracker
         tracker.submit_frame(frame)
 
-        # Face tracking (with frame skip + degradation boost)
-        if face and style_mode == 'andrew':
+        # Face tracking (only when current mode supports sauce)
+        sauce_from_face = None
+        if face and mode.supports_sauce:
             face.frame_skip = degradation.effective_face_skip
-            sauce_mode = face.process(frame)
-        elif style_mode != 'andrew':
-            sauce_mode = False  # sauce is Andrew-only
+            sauce_from_face = face.process(frame)
 
         # Read latest hand results (non-blocking)
         left_hand, right_hand = tracker.get_result()
@@ -499,82 +500,36 @@ def run_camera(config: dict):
         if left_hand:
             tracker.draw_landmarks(frame, left_hand, color=(255, 180, 0))
 
-        # Gesture interpretation — persistence + hysteresis handled internally
+        # Right hand gesture — shared across all modes
         right_gesture = interpret_right_hand(right_hand)
-        left_gesture  = interpret_left_hand(left_hand, style_mode=style_mode)
 
-        last_velocity = left_gesture.velocity
-        left_gesture_name = "~SAUCE~" if sauce_mode else left_gesture.gesture_name
-
-        # ── Unified chord settle ──
-        # Compute what the chord SHOULD be right now from both hands
+        # ── Process frame through current mode ──
         now = time.time()
-        degree = right_gesture.degree if right_gesture else 0
+        result = mode.process_frame(right_gesture, left_hand, sauce_from_face, engine, midi, now)
 
-        if degree == 0:
-            new_notes = []
-            new_info = {}
-        else:
-            if sauce_mode:
-                new_info = engine.build_sauce_chord(degree)
-            else:
-                new_info = engine.build_chord(
-                    degree=degree,
-                    flip_quality=left_gesture.flip_quality,
-                    add_7th=left_gesture.add_7th,
-                    add_9th=left_gesture.add_9th,
-                    add_11th=left_gesture.add_11th,
-                    add_13th=left_gesture.add_13th,
-                    add_sus4=left_gesture.add_sus4,
-                )
-            new_notes = ve.apply(new_info['notes'], degree)
-            # Bass + pedals — root comes from the engine
-            root_midi = engine.get_scale_degree_root(degree)
-            new_notes = bp.apply(new_notes, root_midi)
-
-        # Did the desired chord change this frame?
-        if new_notes != desired_notes:
-            desired_notes = new_notes
-            desired_info = new_info
-            desired_since = now
-
-        # Fire only when desired chord has been stable for SETTLE_MS
-        playing_notes = current_chord.get('notes', []) if current_chord else []
-        if desired_notes != playing_notes and (now - desired_since) >= debounce_time:
-            if not desired_notes:
-                midi.all_notes_off()
-                current_chord = None
-            else:
-                # Smart extensions: if same degree+quality, just diff the notes
-                extension_only = (
-                    smart_extensions
-                    and current_chord is not None
-                    and desired_info.get('degree') == current_chord.get('degree')
-                    and desired_info.get('quality') == current_chord.get('quality')
-                )
-                if extension_only:
-                    midi.send_chord_diff(desired_notes, velocity=last_velocity)
-                else:
-                    midi.send_chord(desired_notes, velocity=last_velocity)
-                current_chord = dict(desired_info, notes=desired_notes,
-                                     note_names=[_midi_name(n) for n in desired_notes])
-
-        # Draw overlay
+        # ── Draw overlay ──
         draw_chord_card(
-            frame, chord_info=current_chord or {},
+            frame, chord_info=result.get('chord_info', {}),
             key_display=engine.get_key_display(),
             mode_display=engine.get_mode_display(),
-            velocity=last_velocity, left_gesture=left_gesture_name,
+            velocity=result.get('velocity', 80),
+            left_gesture=result.get('left_gesture_name', ''),
         )
-        draw_status(frame, midi.connected, smart_extensions=smart_extensions, style_mode=style_mode)
+        draw_status(
+            frame, midi.connected,
+            smart_extensions=getattr(mode, 'smart_extensions', None),
+            mode_name=mode.name,
+            mode_index=mode_mgr.current_index,
+            mode_count=len(modes),
+        )
         draw_controls_hint(frame)
-        if sauce_mode:
+        if result.get('sauce_mode'):
             draw_sauce_banner(frame)
         if show_help:
-            draw_help_overlay(frame)
-        elif show_voicings:
-            draw_voicing_panel(frame, engine, ve, sauce_mode)
-        elif show_bass_pedals:
+            draw_help_overlay(frame, mode_sections=mode.get_help_sections())
+        elif show_voicings and mode.supports_voicings:
+            draw_voicing_panel(frame, engine, ve, result.get('sauce_mode', False))
+        elif show_bass_pedals and mode.supports_bass_pedals:
             draw_bass_pedal_panel(frame, bp)
         if show_latency:
             draw_perf_hud(
@@ -584,12 +539,15 @@ def run_camera(config: dict):
                 hands_fps=tracker.inference_fps,
                 face_fps=face.inference_fps if face else 0.0,
             )
-            draw_latency_slider(frame, debounce_time, DEBOUNCE_MIN, DEBOUNCE_MAX)
+            draw_latency_slider(frame, mode.debounce_time, DEBOUNCE_MIN, DEBOUNCE_MAX)
         if show_debug:
-            settle_progress = (now - desired_since) / max(debounce_time, 0.001) if desired_notes != (current_chord.get('notes', []) if current_chord else []) else 1.0
+            desired_notes = result.get('desired_notes', [])
+            desired_since = result.get('desired_since', 0.0)
+            playing_notes = mode.current_playing_notes
+            settle_progress = (now - desired_since) / max(mode.debounce_time, 0.001) if desired_notes != playing_notes else 1.0
             from core.gesture import _left_thumb
-            draw_debug_gestures(frame, right_gesture, left_gesture, desired_notes,
-                                current_chord.get('notes', []) if current_chord else [], settle_progress,
+            draw_debug_gestures(frame, right_gesture, None, desired_notes,
+                                playing_notes, settle_progress,
                                 thumb_signal=_left_thumb.last_signal)
 
         cv2.imshow("MIDI Camera", frame)
@@ -607,44 +565,43 @@ def run_camera(config: dict):
                 if face: face.release()
                 cap.release(); cv2.destroyAllWindows()
                 return 'config'
+        elif mode_mgr.handle_key(key, raw_key, midi):
+            # Mode switched — close panels, save, log
+            show_voicings = False; show_bass_pedals = False
+            _save_config({'mode_index': mode_mgr.current_index})
+            print(f"[*] Mode: {mode_mgr.current_mode.name} ({mode_mgr.current_index + 1}/{len(modes)})")
         elif key == ord('h'):
             show_help = not show_help; show_voicings = False; show_latency = False
-        elif key == ord('v'):
+        elif key == ord('v') and mode.supports_voicings:
             show_voicings = not show_voicings; show_help = False; show_latency = False; show_bass_pedals = False
         elif key == ord('p') or key == ord('P'):
-            show_bass_pedals = not show_bass_pedals; show_help = False; show_voicings = False
+            if mode.supports_bass_pedals:
+                show_bass_pedals = not show_bass_pedals; show_help = False; show_voicings = False
         elif key == ord('l'):
             show_latency = not show_latency; show_help = False
         elif key == ord('`'):
             show_debug = not show_debug
-        elif key == ord('.'):
-            smart_extensions = not smart_extensions
-            _save_config({'smart_extensions': smart_extensions})
-            print(f"[*] Smart extensions: {'ON' if smart_extensions else 'OFF'}")
-        elif key == ord('/'):
-            style_mode = 'dylan' if style_mode == 'andrew' else 'andrew'
-            _save_config({'style_mode': style_mode})
-            midi.all_notes_off(); current_chord = None
-            print(f"[*] Style mode: {style_mode.upper()}")
-        elif key == ord(';'):
-            # Manual sauce toggle (for testing / when face detection is iffy)
-            if style_mode == 'andrew':
-                sauce_mode = not sauce_mode
-                print(f"[*] Sauce: {'ON' if sauce_mode else 'OFF'} (manual toggle)")
+        elif key == ord('.') and mode.supports_smart_extensions:
+            mode.smart_extensions = not mode.smart_extensions
+            _save_config({'smart_extensions': mode.smart_extensions})
+            print(f"[*] Smart extensions: {'ON' if mode.smart_extensions else 'OFF'}")
+        elif key == ord(';') and mode.supports_sauce:
+            mode.sauce_active = not mode.sauce_active
+            print(f"[*] Sauce: {'ON' if mode.sauce_active else 'OFF'} (manual toggle)")
         elif key != 255:
             if show_latency:
                 step = 0.01
-                if key == 3 or raw_key == 63235:   debounce_time = min(DEBOUNCE_MAX, debounce_time + step)
-                elif key == 2 or raw_key == 63234: debounce_time = max(DEBOUNCE_MIN, debounce_time - step)
-                elif key == ord('r'): debounce_time = DEBOUNCE_DEFAULT
-            elif show_voicings:
-                _handle_voicing_key(key, ve, engine, sauce_mode, raw_key)
-            elif show_bass_pedals:
+                if key == 3 or raw_key == 63235:   mode.debounce_time = min(DEBOUNCE_MAX, mode.debounce_time + step)
+                elif key == 2 or raw_key == 63234: mode.debounce_time = max(DEBOUNCE_MIN, mode.debounce_time - step)
+                elif key == ord('r'): mode.debounce_time = DEBOUNCE_DEFAULT
+            elif show_voicings and mode.supports_voicings:
+                _handle_voicing_key(key, ve, engine, result.get('sauce_mode', False), raw_key)
+            elif show_bass_pedals and mode.supports_bass_pedals:
                 _handle_bass_pedal_key(key, bp, raw_key)
             elif not show_help:
                 changed = _handle_shortcut(key, engine, midi, ve, show_voicings, raw_key, bass_pedals=bp)
                 if changed:
-                    midi.all_notes_off(); current_chord = None
+                    midi.all_notes_off(); mode._current = None
                     print(f"[*] {engine.get_key_display()} {engine.get_mode_display()} oct{engine.octave}")
                     _save_config({'key': engine.key, 'mode': engine.mode, 'octave': engine.octave})
 
@@ -669,16 +626,10 @@ def run_camera(config: dict):
     return 'quit'
 
 
-def _midi_name(midi_num: int) -> str:
-    NOTE_NAMES = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B']
-    octave = (midi_num // 12) - 1
-    return f"{NOTE_NAMES[midi_num % 12]}{octave}"
-
-
 def _load_config() -> dict:
     """Load config.json if it exists, otherwise use defaults."""
     import json, os
-    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': -1, 'smart_extensions': True, 'style_mode': 'andrew'}
+    defaults = {'key': 'C', 'mode': 'major', 'channel': 0, 'octave': 3, 'camera': -1, 'smart_extensions': True, 'style_mode': 'andrew', 'mode_index': None}
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     if os.path.exists(config_path):
         try:
@@ -718,17 +669,16 @@ def _load_config() -> dict:
     return cfg
 
 
-def _save_config(cfg: dict):
-    """Save updated config back to config.json (called when shortcuts change key/mode/octave)."""
+def _save_config(updates: dict):
+    """Merge updates into config.json."""
     import json, os
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     try:
-        # Read existing, merge, write
         existing = {}
         if os.path.exists(config_path):
             with open(config_path) as f:
                 existing = json.load(f)
-        existing.update({'key': cfg['key'], 'mode': cfg['mode'], 'octave': cfg['octave']})
+        existing.update(updates)
         with open(config_path, 'w') as f:
             json.dump(existing, f, indent=2)
     except Exception:
@@ -737,9 +687,11 @@ def _save_config(cfg: dict):
 
 def main():
     config = _load_config()
+    mode_idx = config.get('mode_index')
+    style_info = f"ModeIdx={mode_idx}" if mode_idx is not None else f"Style={config.get('style_mode', 'andrew')}"
     print(f"[*] Starting: Key={config['key']} Mode={config['mode']} "
           f"Ch={config['channel']+1} Oct={config['octave']} Cam={config['camera']} "
-          f"Style={config.get('style_mode', 'andrew')}")
+          f"{style_info}")
     run_camera(config)
     print("[*] MIDI Camera closed.")
 
