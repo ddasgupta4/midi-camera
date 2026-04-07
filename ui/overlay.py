@@ -7,9 +7,14 @@ import numpy as np
 
 
 def draw_semi_transparent_rect(frame, x, y, w, h, color=(0, 0, 0), alpha=0.7):
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x, y), (x + w, y + h), color, -1)
-    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+    fh, fw = frame.shape[:2]
+    x1, y1 = max(0, x), max(0, y)
+    x2, y2 = min(fw, x + w), min(fh, y + h)
+    if x2 <= x1 or y2 <= y1:
+        return
+    roi = frame[y1:y2, x1:x2].copy()
+    cv2.rectangle(roi, (0, 0), (x2 - x1, y2 - y1), color, -1)
+    cv2.addWeighted(roi, alpha, frame[y1:y2, x1:x2], 1 - alpha, 0, frame[y1:y2, x1:x2])
 
 
 def draw_chord_card(frame, chord_info: dict, key_display: str, mode_display: str,
@@ -505,7 +510,7 @@ def draw_drum_card(frame, result: dict, key_display: str, mode_display: str, lef
             for col_idx, name in enumerate(row):
                 px = tx + col_idx * 88
                 py = ty + 75 + row_idx * 30
-                is_active = (row_idx, col_idx) in [(r, c) for r, c in active]
+                is_active = (row_idx, col_idx) in active
                 color = (80, 255, 160) if is_active else (100, 100, 100)
                 cv2.putText(frame, name, (px, py),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1 + int(is_active))

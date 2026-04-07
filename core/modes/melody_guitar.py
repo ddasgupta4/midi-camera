@@ -83,6 +83,7 @@ class MelodyGuitarMode(Mode):
             self.prev_wrist_y = wrist_y
         else:
             self.prev_wrist_y = None
+            self.note_held = False
 
         # Build note if plucked and we have a degree
         if plucked and self.current_degree > 0:

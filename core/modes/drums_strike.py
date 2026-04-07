@@ -46,6 +46,9 @@ class DrumsStrikeMode(Mode):
         # For display: which drum was last hit per hand
         self.right_drum_name = ""
         self.left_drum_name = ""
+        # Held notes — released on next frame to avoid zero-length
+        self.held_note_right = None
+        self.held_note_left = None
 
     def process_frame(self, right_gesture, left_hand, sauce_from_face, engine, midi, now):
         from core.gesture import get_left_hand_raw
@@ -53,6 +56,11 @@ class DrumsStrikeMode(Mode):
         hits = []
 
         # Right hand strike detection
+        # Release previous frame's held note
+        if self.held_note_right is not None:
+            midi.send_note(self.held_note_right, velocity=0, on=False)
+            self.held_note_right = None
+
         if right_gesture:
             wy = right_gesture.wrist_y
             wx = right_gesture.wrist_x
@@ -64,7 +72,7 @@ class DrumsStrikeMode(Mode):
                     # X position determines drum: left half = kick, right half = snare
                     drum = RIGHT_LEFT_DRUM if wx < 0.5 else RIGHT_RIGHT_DRUM
                     midi.send_note(drum, velocity=vel, on=True)
-                    midi.send_note(drum, velocity=0, on=False)
+                    self.held_note_right = drum
                     self.right_drum_name = DRUM_NAMES[drum]
                     hits.append(self.right_drum_name)
                     self.last_strike_time_right = now
@@ -74,6 +82,11 @@ class DrumsStrikeMode(Mode):
             self.prev_wrist_y_right = None
 
         # Left hand strike detection
+        # Release previous frame's held note
+        if self.held_note_left is not None:
+            midi.send_note(self.held_note_left, velocity=0, on=False)
+            self.held_note_left = None
+
         raw = get_left_hand_raw(left_hand)
         if raw:
             wy = raw['wrist_y']
@@ -85,7 +98,7 @@ class DrumsStrikeMode(Mode):
                     vel = max(50, min(127, int(delta * 1400)))
                     drum = LEFT_LEFT_DRUM if wx < 0.5 else LEFT_RIGHT_DRUM
                     midi.send_note(drum, velocity=vel, on=True)
-                    midi.send_note(drum, velocity=0, on=False)
+                    self.held_note_left = drum
                     self.left_drum_name = DRUM_NAMES[drum]
                     hits.append(self.left_drum_name)
                     self.last_strike_time_left = now
@@ -122,12 +135,15 @@ class DrumsStrikeMode(Mode):
         }
 
     def on_exit(self, midi):
-        midi.all_notes_off()
+        if self.held_note_right is not None:
+            midi.send_note(self.held_note_right, velocity=0, on=False)
+            self.held_note_right = None
+        if self.held_note_left is not None:
+            midi.send_note(self.held_note_left, velocity=0, on=False)
+            self.held_note_left = None
         self.prev_wrist_y_right = None
         self.prev_wrist_y_left = None
-        self._current = None
-        self._desired_notes = []
-        self._desired_info = {}
+        super().on_exit(midi)
 
     def get_help_sections(self):
         return [

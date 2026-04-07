@@ -44,16 +44,18 @@ class MidiOutput:
         if not self.connected or not self.midi_out:
             return
 
+        velocity = max(0, min(127, velocity))
+
         # Note-off for all currently active notes
         self.all_notes_off()
 
-        # Note-on for new chord
-        for note in notes:
-            note = max(0, min(127, note))
+        # Clamp and send note-on for new chord
+        clamped = [max(0, min(127, n)) for n in notes]
+        for note in clamped:
             msg = [0x90 | self.channel, note, velocity]
             self.midi_out.send_message(msg)
 
-        self.active_notes = list(notes)
+        self.active_notes = clamped
 
     def send_chord_diff(self, notes: List[int], velocity: int = 100):
         """
@@ -63,20 +65,21 @@ class MidiOutput:
         if not self.connected or not self.midi_out:
             return
 
+        velocity = max(0, min(127, velocity))
+        clamped = [max(0, min(127, n)) for n in notes]
+
         current = set(self.active_notes)
-        desired = set(notes)
+        desired = set(clamped)
 
         # NoteOff only for notes that left the chord
         for note in sorted(current - desired):
-            note = max(0, min(127, note))
             self.midi_out.send_message([0x80 | self.channel, note, 0])
 
         # NoteOn only for new notes
         for note in sorted(desired - current):
-            note = max(0, min(127, note))
             self.midi_out.send_message([0x90 | self.channel, note, velocity])
 
-        self.active_notes = list(notes)
+        self.active_notes = clamped
 
     def send_note(self, note: int, velocity: int = 100, on: bool = True):
         """Send a single note on or off."""
@@ -111,7 +114,7 @@ class MidiOutput:
             return
 
         for note in self.active_notes:
-            msg = [0x80 | self.channel, note, 0]
+            msg = [0x80 | self.channel, max(0, min(127, note)), 0]
             self.midi_out.send_message(msg)
 
         self.active_notes = []

@@ -10,7 +10,6 @@ No debounce — drums need to be instant.
 """
 
 from core.modes.base import Mode
-from core.chord_engine import midi_to_note_name
 
 # MIDI note assignments (General MIDI drum map)
 RIGHT_DRUMS = [36, 38, 42, 46]  # kick, snare, closed-hat, open-hat
@@ -47,14 +46,8 @@ class DrumsFingerMode(Mode):
 
         # Right hand
         if right_gesture:
-            # We need per-finger extended state from RightHandGesture
-            # But RightHandGesture only has degree and finger_count
-            # We need to re-detect fingers — use the raw landmark approach
-            # Actually, interpret_right_hand already ran the finger detector
-            # We can access the detector state directly
-            from core.gesture import _right_fingers, _right_thumb
-            current_right = list(_right_fingers._states)
-            thumb_accent = _right_thumb._is_out
+            current_right = list(right_gesture.extended)
+            thumb_accent = right_gesture.thumb_out
 
             # Velocity from wrist height (top of frame = loud)
             vel = max(50, min(127, int(127 - right_gesture.wrist_y * 77)))
@@ -137,9 +130,7 @@ class DrumsFingerMode(Mode):
                 midi.send_note(LEFT_DRUMS[i], velocity=0, on=False)
         self.prev_right = [False, False, False, False]
         self.prev_left = [False, False, False, False]
-        self._current = None
-        self._desired_notes = []
-        self._desired_info = {}
+        super().on_exit(midi)
 
     def get_help_sections(self):
         return [

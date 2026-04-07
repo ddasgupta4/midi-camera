@@ -59,6 +59,9 @@ class DrumsZoneMode(Mode):
         # Previous positions for velocity calculation
         self.prev_pos_right = None
         self.prev_pos_left = None
+        # Currently held notes per hand (for proper note-off on zone change)
+        self.held_note_right = None
+        self.held_note_left = None
         self.last_hits = []
         self.active_zones = set()  # (row, col) currently active for display
         self.left_gesture_name = ""
@@ -84,16 +87,21 @@ class DrumsZoneMode(Mode):
                 vel = max(50, min(127, int(speed * 1500)))
 
             if zone != self.prev_zone_right:
+                # Release previous zone note
+                if self.held_note_right is not None:
+                    midi.send_note(self.held_note_right, velocity=0, on=False)
                 # Zone changed — trigger!
                 note = _zone_note(*zone)
                 midi.send_note(note, velocity=vel, on=True)
-                # Brief note — drums are percussive
-                midi.send_note(note, velocity=0, on=False)
+                self.held_note_right = note
                 hits.append(DRUM_NAMES[note])
 
             self.prev_zone_right = zone
             self.prev_pos_right = (x, y)
         else:
+            if self.held_note_right is not None:
+                midi.send_note(self.held_note_right, velocity=0, on=False)
+                self.held_note_right = None
             self.prev_zone_right = None
             self.prev_pos_right = None
 
@@ -112,15 +120,20 @@ class DrumsZoneMode(Mode):
                 vel = max(50, min(127, int(speed * 1500)))
 
             if zone != self.prev_zone_left:
+                if self.held_note_left is not None:
+                    midi.send_note(self.held_note_left, velocity=0, on=False)
                 note = _zone_note(*zone)
                 midi.send_note(note, velocity=vel, on=True)
-                midi.send_note(note, velocity=0, on=False)
+                self.held_note_left = note
                 hits.append(DRUM_NAMES[note])
 
             self.prev_zone_left = zone
             self.prev_pos_left = (x, y)
             self.left_gesture_name = "tracking"
         else:
+            if self.held_note_left is not None:
+                midi.send_note(self.held_note_left, velocity=0, on=False)
+                self.held_note_left = None
             self.prev_zone_left = None
             self.prev_pos_left = None
             self.left_gesture_name = "no hand"
@@ -143,14 +156,17 @@ class DrumsZoneMode(Mode):
         }
 
     def on_exit(self, midi):
-        midi.all_notes_off()
+        if self.held_note_right is not None:
+            midi.send_note(self.held_note_right, velocity=0, on=False)
+            self.held_note_right = None
+        if self.held_note_left is not None:
+            midi.send_note(self.held_note_left, velocity=0, on=False)
+            self.held_note_left = None
         self.prev_zone_right = None
         self.prev_zone_left = None
         self.prev_pos_right = None
         self.prev_pos_left = None
-        self._current = None
-        self._desired_notes = []
-        self._desired_info = {}
+        super().on_exit(midi)
 
     def get_help_sections(self):
         return [

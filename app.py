@@ -476,6 +476,7 @@ def run_camera(config: dict):
     print("[*] Press H for help, / to cycle mode, Q to quit")
 
     while True:
+      try:
         t_start = time.time()
         ret, frame = cap.read()
         if not ret: break
@@ -577,6 +578,7 @@ def run_camera(config: dict):
             if show_help or show_voicings or show_bass_pedals:
                 show_help = False; show_voicings = False; show_bass_pedals = False
             else:
+                reset_gesture_state()
                 midi.close(); tracker.release()
                 if face: face.release()
                 cap.release(); cv2.destroyAllWindows()
@@ -617,7 +619,7 @@ def run_camera(config: dict):
             elif not show_help:
                 changed = _handle_shortcut(key, engine, midi, ve, show_voicings, raw_key, bass_pedals=bp)
                 if changed:
-                    midi.all_notes_off(); mode._current = None
+                    midi.all_notes_off(); mode.reset_state()
                     print(f"[*] {engine.get_key_display()} {engine.get_mode_display()} oct{engine.octave}")
                     _save_config({'key': engine.key, 'mode': engine.mode, 'octave': engine.octave})
 
@@ -635,6 +637,10 @@ def run_camera(config: dict):
 
         if elapsed < frame_time:
             time.sleep(frame_time - elapsed)
+
+      except Exception as e:
+        print(f"[!] Error in main loop: {e}")
+        break
 
     midi.close(); tracker.release()
     if face: face.release()

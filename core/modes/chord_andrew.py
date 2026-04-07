@@ -91,6 +91,10 @@ class AndrewMode(Mode):
             'desired_since': self._desired_since,
         }
 
+    def on_exit(self, midi):
+        self.sauce_active = False
+        super().on_exit(midi)
+
     def get_help_sections(self):
         return [
             ("RIGHT HAND (degree)", [

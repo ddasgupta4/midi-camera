@@ -5,7 +5,6 @@ Each mode defines how hand gestures map to MIDI output.
 Modes own their own settle/debounce logic and MIDI sending.
 """
 
-import time
 from abc import ABC, abstractmethod
 
 
@@ -33,6 +32,13 @@ class Mode(ABC):
         self._desired_info: dict = {}
         self._desired_since: float = 0.0
         self._current: dict | None = None
+
+    def reset_state(self):
+        """Reset debounce/settle state (e.g. after key change)."""
+        self._current = None
+        self._desired_notes = []
+        self._desired_info = {}
+        self._desired_since = 0.0
 
     @property
     def current_playing_notes(self) -> list:

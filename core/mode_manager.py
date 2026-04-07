@@ -6,6 +6,7 @@ and processes mode-switching keys (/ to cycle, 1-9 for direct select).
 """
 
 from core.modes.base import Mode
+from core.gesture import reset_gesture_state
 
 
 class ModeManager:
@@ -26,9 +27,10 @@ class ModeManager:
         if index < 0 or index >= len(self.modes) or index == self._index:
             return False
         self.modes[self._index].on_exit(midi)
+        midi.all_notes_off()
+        reset_gesture_state()
         self._index = index
         self.modes[self._index].on_enter(midi)
-        midi.all_notes_off()
         return True
 
     def next_mode(self, midi) -> bool:
