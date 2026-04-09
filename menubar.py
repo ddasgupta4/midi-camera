@@ -51,47 +51,70 @@ def save_config(cfg: dict):
 def detect_cameras() -> list[tuple[int, str]]:
     """
     Returns list of (cv_index, display_name) for available cameras.
-    Uses AVFoundation uniqueID to reliably map devices to OpenCV indices.
+    Uses ffmpeg to get the authoritative AVFoundation device list with indices,
+    falling back to AVFoundation Python bindings, then blind OpenCV probing.
     """
-    cameras = []
+    import subprocess
+    import re
 
-    # Get AVFoundation devices with unique IDs
-    av_devices = []  # list of (uniqueID, localizedName)
+    # ffmpeg gives ground-truth index→name mapping for AVFoundation (matches OpenCV)
     try:
-        from AVFoundation import AVCaptureDevice, AVMediaTypeVideo
-        devices = AVCaptureDevice.devicesWithMediaType_(AVMediaTypeVideo)
-        av_devices = [(d.uniqueID(), d.localizedName()) for d in devices]
+        result = subprocess.run(
+            ['ffmpeg', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''],
+            capture_output=True, text=True, timeout=5
+        )
+        output = result.stderr  # ffmpeg writes device list to stderr
+        cameras = []
+        in_video = False
+        for line in output.splitlines():
+            if 'AVFoundation video devices' in line:
+                in_video = True
+                continue
+            if 'AVFoundation audio devices' in line:
+                break
+            if not in_video:
+                continue
+            m = re.search(r'\[(\d+)\] (.+)', line)
+            if m:
+                idx = int(m.group(1))
+                name = m.group(2).strip()
+                cameras.append((idx, name))
+        # Filter to only indices OpenCV can actually open
+        import cv2
+        valid = []
+        for idx, name in cameras:
+            cap = cv2.VideoCapture(idx)
+            if cap.isOpened():
+                valid.append((idx, name))
+                cap.release()
+        if valid:
+            return valid
     except Exception:
         pass
 
-    if av_devices:
-        # AVFoundation index order matches OpenCV index order on macOS
-        # Probe which OpenCV indices are available
-        cv_available = []
-        for idx in range(5):
-            cap = __import__('cv2').VideoCapture(idx)
-            if cap.isOpened():
-                cv_available.append(idx)
-                cap.release()
+    # Fallback: AVFoundation Python bindings (order may not match OpenCV)
+    av_names = []
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeVideo
+        devices = AVCaptureDevice.devicesWithMediaType_(AVMediaTypeVideo)
+        av_names = [d.localizedName() for d in devices]
+    except Exception:
+        pass
 
-        for i, cv_idx in enumerate(cv_available):
-            if i < len(av_devices):
-                _, name = av_devices[i]
-            else:
-                name = f"Camera {cv_idx}"
-            cameras.append((cv_idx, name))
-    else:
-        # Fallback: no AVFoundation, just probe indices
-        for idx in range(5):
-            cap = __import__('cv2').VideoCapture(idx)
-            if cap.isOpened():
-                cameras.append((idx, f"Camera {idx}"))
-                cap.release()
+    import cv2
+    cameras = []
+    cv_available = []
+    for idx in range(6):
+        cap = cv2.VideoCapture(idx)
+        if cap.isOpened():
+            cv_available.append(idx)
+            cap.release()
 
-    if not cameras:
-        cameras = [(0, "Default Camera"), (1, "Camera 1")]
+    for i, cv_idx in enumerate(cv_available):
+        name = av_names[i] if i < len(av_names) else f"Camera {cv_idx}"
+        cameras.append((cv_idx, name))
 
-    return cameras
+    return cameras or [(0, "Default Camera")]
 
 
 def best_camera(cameras: list[tuple[int, str]]) -> int:

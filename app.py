@@ -448,6 +448,7 @@ def run_camera(config: dict):
     if not midi_ok:
         print("[!] Could not open MIDI port.")
 
+    print(f"[*] Opening camera [{config['camera']}] ({config.get('camera_name', '?')})")
     cap = cv2.VideoCapture(config['camera'])
     if not cap.isOpened():
         print(f"[!] Could not open camera {config['camera']}")
@@ -688,8 +689,11 @@ def _load_config() -> dict:
             for idx, name in cams:
                 if saved_lower in name.lower() or name.lower() in saved_lower:
                     cam_idx = idx
+                    cfg['camera_name'] = name  # update to exact name
                     break
-        if cam_idx < 0:
+        if cam_idx >= 0:
+            _save_config({'camera': cam_idx, 'camera_name': cfg.get('camera_name', saved_name)})
+        else:
             print(f"[!] Saved camera '{saved_name}' not found, auto-detecting...")
 
     # Fallback: auto-detect best camera
