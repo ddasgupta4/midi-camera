@@ -674,12 +674,21 @@ def _load_config() -> dict:
     saved_name = cfg.get('camera_name', '')
     cam_idx = -1
 
-    # Try to find saved camera by name
+    if cams:
+        print(f"[*] Cameras: {', '.join(f'[{i}] {n}' for i, n in cams)}")
+
+    # Try to find saved camera by name (exact match first, then substring)
     if saved_name:
         for idx, name in cams:
             if name == saved_name:
                 cam_idx = idx
                 break
+        if cam_idx < 0:
+            saved_lower = saved_name.lower()
+            for idx, name in cams:
+                if saved_lower in name.lower() or name.lower() in saved_lower:
+                    cam_idx = idx
+                    break
         if cam_idx < 0:
             print(f"[!] Saved camera '{saved_name}' not found, auto-detecting...")
 

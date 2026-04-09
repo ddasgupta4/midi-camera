@@ -96,8 +96,8 @@ def detect_cameras() -> list[tuple[int, str]]:
 
 def best_camera(cameras: list[tuple[int, str]]) -> int:
     """Pick best camera — prefer built-in FaceTime, avoid virtual/Continuity/iPhone."""
-    SKIP = ('continuity', 'iphone', 'ipad', 'obs', 'virtual', 'ndisplay', 'capture')
-    PREFER = ('facetime', 'built-in', 'isight')
+    SKIP = ('continuity', 'iphone', 'ipad', 'obs', 'virtual', 'ndisplay', 'capture', 'desk view', 'camo')
+    PREFER = ('facetime', 'built-in', 'isight', 'macbook')
     # First pass: prefer known built-in
     for idx, name in cameras:
         low = name.lower()
