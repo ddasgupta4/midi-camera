@@ -18,7 +18,8 @@ from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
                          draw_latency_slider, draw_perf_hud, draw_debug_gestures,
                          draw_bass_pedal_panel, draw_cc_card, draw_drum_card,
                          draw_theremin_overlay, draw_guitar_overlay,
-                         draw_zone_grid_overlay, draw_strike_targets_overlay)
+                         draw_zone_grid_overlay, draw_strike_targets_overlay,
+                         draw_mapper_overlay, draw_finger_drums_overlay)
 
 
 DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
@@ -532,6 +533,10 @@ def run_camera(config: dict):
                 trails=result.get('strike_trails', {}),
                 now=result.get('strike_now', now),
             )
+        elif layout == 'finger':
+            finger_meta = result.get('finger_drum_meta')
+            if finger_meta:
+                draw_finger_drums_overlay(frame, finger_meta)
 
         therm_display = result.get('theremin_display')
         if therm_display:
@@ -541,6 +546,10 @@ def run_camera(config: dict):
         if guitar_display:
             right_lm = right_hand.landmarks if right_hand else None
             draw_guitar_overlay(frame, guitar_display, right_landmarks=right_lm)
+
+        mapper_positions = result.get('mapper_positions')
+        if mapper_positions:
+            draw_mapper_overlay(frame, mapper_positions)
 
         # ── Draw overlay ── dispatch by mode type
         result_type = result.get('type', 'chord')
@@ -573,7 +582,7 @@ def run_camera(config: dict):
             mode_index=mode_mgr.current_index,
             mode_count=len(modes),
         )
-        draw_controls_hint(frame)
+        draw_controls_hint(frame, mode_name=mode.name)
         if result.get('sauce_mode'):
             draw_sauce_banner(frame)
         if show_help:

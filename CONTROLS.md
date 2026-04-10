@@ -123,7 +123,7 @@ In-scene overlay: pluck flash + cooldown ring at wrist.
 
 ## Mode 6 — MIDI Mapper
 
-| Axis | CC | Range |
+| Axis | Default CC | Range |
 |---|---|---|
 | Right X | CC1 | 0-127 |
 | Right Y | CC2 | 0-127 |
@@ -132,7 +132,21 @@ In-scene overlay: pluck flash + cooldown ring at wrist.
 | Left Y | CC4 | 0-127 |
 | Left finger count | CC6 | 0-127 |
 
-All values EMA-smoothed (α=0.3). Continuous stream, no debounce.
+Position axes use a responsive EMA (α≈0.4); finger count uses heavier
+smoothing (α≈0.15) so the discrete 0-5 count doesn't ladder. A small
+deadzone suppresses tremor at rest.
+
+**Rebind keys (session-only):**
+
+| Key | Action |
+|---|---|
+| `[` `]` | Select previous / next axis |
+| `-` `=` | Decrease / increase CC number for selected axis |
+| `i` | Invert selected axis |
+| `0` | Reset all assignments + inversions to defaults |
+
+**Overlay:** color-coded crosshairs at each wrist with live `x/y` readouts.
+Selected axis highlighted in the bottom-left card.
 
 ---
 
@@ -145,9 +159,19 @@ All values EMA-smoothed (α=0.3). Continuous stream, no debounce.
 | Ring | Closed Hat (42) | Low Tom (45) |
 | Pinky | Open Hat (46) | High Tom (48) |
 | Thumb | Accent (+30 vel) | Accent (+30 vel) |
-| Wrist height | Velocity | Velocity |
 
-Rising-edge detection. Extend finger = hit, retract = release.
+Rising-edge detection: extend finger = hit, retract = release. A 20ms
+per-finger cooldown prevents flicker retriggers when MediaPipe hysteresis
+state bounces on the boundary.
+
+**Velocity** combines two signals:
+- **base**: wrist height (high on screen = louder)
+- **strike bonus**: downward wrist velocity at hit-time (rewards real
+  drumming motion, not static finger movements)
+
+**Overlay:** 8-pad strip across the bottom of the camera view showing the
+left hand's drums on the left, right hand's on the right. Cells flash on
+hit and a small dot marks each currently-held finger.
 
 ---
 
