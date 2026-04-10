@@ -16,7 +16,9 @@ from core.mode_manager import ModeManager
 from ui.overlay import (draw_chord_card, draw_status, draw_controls_hint,
                          draw_sauce_banner, draw_help_overlay, draw_voicing_panel,
                          draw_latency_slider, draw_perf_hud, draw_debug_gestures,
-                         draw_bass_pedal_panel, draw_cc_card, draw_drum_card)
+                         draw_bass_pedal_panel, draw_cc_card, draw_drum_card,
+                         draw_theremin_overlay, draw_guitar_overlay,
+                         draw_zone_grid_overlay, draw_strike_targets_overlay)
 
 
 DEBOUNCE_MIN  = 0.00   # 0ms   — unhinged
@@ -509,6 +511,37 @@ def run_camera(config: dict):
         now = time.time()
         result = mode.process_frame(right_gesture, left_hand, sauce_from_face, engine, midi, now)
 
+        # ── Draw in-scene mode overlays (camera view) ──
+        # These draw BEFORE the bottom-left card so the card sits on top.
+        layout = result.get('drum_layout')
+        if layout == 'zone':
+            draw_zone_grid_overlay(
+                frame,
+                zone_names=result.get('zone_grid', []),
+                active_zones=result.get('active_zones', []),
+                flash_times=result.get('zone_flash_times', {}),
+                hand_positions=result.get('zone_hand_positions', {}),
+                now=result.get('zone_now', now),
+            )
+        elif layout == 'strike':
+            draw_strike_targets_overlay(
+                frame,
+                pads=result.get('strike_pads', {}),
+                hand_positions=result.get('strike_hand_positions', {}),
+                flash_times=result.get('strike_flash_times', {}),
+                trails=result.get('strike_trails', {}),
+                now=result.get('strike_now', now),
+            )
+
+        therm_display = result.get('theremin_display')
+        if therm_display:
+            draw_theremin_overlay(frame, therm_display)
+
+        guitar_display = result.get('guitar_display')
+        if guitar_display:
+            right_lm = right_hand.landmarks if right_hand else None
+            draw_guitar_overlay(frame, guitar_display, right_landmarks=right_lm)
+
         # ── Draw overlay ── dispatch by mode type
         result_type = result.get('type', 'chord')
         if result_type == 'mapper':
@@ -589,6 +622,9 @@ def run_camera(config: dict):
             show_voicings = False; show_bass_pedals = False
             _save_config({'mode_index': mode_mgr.current_index})
             print(f"[*] Mode: {mode_mgr.current_mode.name} ({mode_mgr.current_index + 1}/{len(modes)})")
+        elif mode.handle_key(key, raw_key, midi=midi):
+            # Mode-specific shortcut consumed the key
+            pass
         elif key == ord('h'):
             show_help = not show_help; show_voicings = False; show_latency = False
         elif key == ord('v') and mode.supports_voicings:

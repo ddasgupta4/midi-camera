@@ -2,46 +2,61 @@
 Melody Guitar Mode — Pluck-style note triggering.
 
 Left hand: finger count = scale degree (same mapping as piano mode).
-Right hand: "pluck" = fast downward movement triggers the note.
-Pluck velocity from speed of downward movement.
-Right hand finger count while note held = octave variant (1-4).
+Right hand: "pluck" = fast wrist movement triggers the note. Both downward
+            and upward plucks trigger (up-strums and down-strums both work).
+
+Pluck velocity comes from time-normalized wrist velocity (screen-heights/sec),
+so it is independent of the main-loop frame rate.
+
+Octave is LATCHED at pluck time from right-hand finger count — you don't have
+to hold it while the note sustains. Pinch (thumb+index) or fist releases.
 """
 
 from core.modes.base import Mode, _midi_name
 from core.chord_engine import midi_to_note_name, ROMAN
+from core.gesture_filters import EMA, VelocityTracker
 
 
 class MelodyGuitarMode(Mode):
     name = "Guitar"
     description = "Pluck notes — L=degree, R=strum"
-    debounce_time = 0.04  # 40ms
+    debounce_time = 0.01  # 10ms — latency matters here
 
     supports_voicings = False
     supports_bass_pedals = False
     supports_sauce = False
     supports_smart_extensions = False
 
-    PLUCK_THRESHOLD = 0.06  # wrist_y delta per frame to count as pluck (downward)
-    MIN_PLUCK_INTERVAL = 0.08  # minimum seconds between plucks
+    # Time-normalized velocity thresholds (screen-heights per second)
+    PLUCK_VEL_THRESHOLD = 1.6
+    MIN_PLUCK_INTERVAL = 0.05  # 50 ms lockout — 20 plucks/sec ceiling
 
     def __init__(self):
         super().__init__()
-        self.prev_wrist_y = None
         self.last_pluck_time = 0.0
         self.last_velocity = 80
         self.left_gesture_name = ""
         self.current_degree = 0
-        self.octave_variant = 0  # 0-3 from right hand finger count
+        self.octave_variant = 0       # latched at pluck time
+        self.note_held = False
+        self._ema_y = EMA(alpha=0.5)  # light smoothing, doesn't hide real plucks
+        self._vel_y = VelocityTracker()
+        # For overlay display
+        self.pluck_flash_time = 0.0
+        self.cooldown_progress = 1.0
+        self.last_pluck_wrist = None  # (x, y) normalized at pluck time
+
+    def on_enter(self, midi):
+        self._ema_y.reset()
+        self._vel_y.reset()
         self.note_held = False
 
     def process_frame(self, right_gesture, left_hand, sauce_from_face, engine, midi, now):
         from core.gesture import get_left_hand_raw
 
-        # Left hand: degree selector
+        # Left hand: degree selector (same scheme as piano mode)
         raw = get_left_hand_raw(left_hand)
         if raw:
-            # Same degree mapping as piano: finger count 1-5 = degree 1-5
-            # thumb extends to 6-7
             fc = raw['finger_count']
             thumb = raw['thumb_out']
             if fc == 0 and thumb:
@@ -59,30 +74,36 @@ class MelodyGuitarMode(Mode):
             self.current_degree = 0
             self.left_gesture_name = "no hand"
 
-        # Right hand: pluck detection + octave variant
+        # Right hand: pluck detection + octave variant + pinch-release
         plucked = False
         if right_gesture:
-            wrist_y = right_gesture.wrist_y
+            y_smoothed = self._ema_y.update(right_gesture.wrist_y)
+            vel_per_sec, _dt = self._vel_y.update(y_smoothed, now)
 
-            # Octave variant from right finger count (1-4 octave selection)
-            self.octave_variant = max(0, min(3, right_gesture.finger_count - 1))
+            # Pinch-to-release: thumb + only index extended
+            pinched = right_gesture.thumb_out and not any(right_gesture.extended)
 
-            # Pluck: detect fast downward movement (increasing Y = downward)
-            if self.prev_wrist_y is not None:
-                delta = wrist_y - self.prev_wrist_y  # positive = moving down
-                if delta > self.PLUCK_THRESHOLD and (now - self.last_pluck_time) > self.MIN_PLUCK_INTERVAL:
-                    plucked = True
-                    self.last_pluck_time = now
-                    # Velocity from pluck speed (faster = louder)
-                    self.last_velocity = max(50, min(127, int(delta * 1200)))
+            # Either down OR up strum triggers; direction of motion = sign
+            if (abs(vel_per_sec) > self.PLUCK_VEL_THRESHOLD
+                    and (now - self.last_pluck_time) > self.MIN_PLUCK_INTERVAL):
+                plucked = True
+                self.last_pluck_time = now
+                # Velocity from absolute speed; wider, flatter curve than before
+                v = int(50 + min(77, abs(vel_per_sec) * 25))
+                self.last_velocity = max(50, min(127, v))
+                # Latch octave at strike time
+                self.octave_variant = max(0, min(3, right_gesture.finger_count - 1))
+                self.pluck_flash_time = now
+                self.last_pluck_wrist = (right_gesture.wrist_x, right_gesture.wrist_y)
 
-            # Fist = note off
-            if right_gesture.finger_count == 0 and right_gesture.degree == 0:
+            # Release conditions: fist OR pinch
+            if pinched:
                 self.note_held = False
-
-            self.prev_wrist_y = wrist_y
+            elif right_gesture.finger_count == 0 and right_gesture.degree == 0 and not right_gesture.thumb_out:
+                self.note_held = False
         else:
-            self.prev_wrist_y = None
+            self._ema_y.reset()
+            self._vel_y.reset()
             self.note_held = False
 
         # Build note if plucked and we have a degree
@@ -123,6 +144,10 @@ class MelodyGuitarMode(Mode):
                     note_names=[_midi_name(n) for n in self._desired_notes],
                 )
 
+        # Cooldown progress for overlay: 0.0..1.0, 1.0 = ready
+        since_pluck = now - self.last_pluck_time
+        self.cooldown_progress = max(0.0, min(1.0, since_pluck / self.MIN_PLUCK_INTERVAL))
+
         return {
             'type': 'melody',
             'chord_info': self._current or {},
@@ -131,6 +156,13 @@ class MelodyGuitarMode(Mode):
             'sauce_mode': False,
             'desired_notes': self._desired_notes,
             'desired_since': self._desired_since,
+            'guitar_display': {
+                'pluck_flash_age': (now - self.pluck_flash_time) if self.pluck_flash_time else 999.0,
+                'cooldown': self.cooldown_progress,
+                'last_pluck_wrist': self.last_pluck_wrist,
+                'note_held': self.note_held,
+                'octave_variant': self.octave_variant,
+            },
         }
 
     def get_help_sections(self):
@@ -146,12 +178,10 @@ class MelodyGuitarMode(Mode):
                 "Thumb + pinky   =  Scale degree 7",
             ]),
             ("RIGHT HAND (strum)", [
-                "Downward flick  =  Pluck/trigger note",
-                "Fist            =  Mute / note off",
-                "1 finger        =  Octave 0",
-                "2 fingers       =  Octave +1",
-                "3 fingers       =  Octave +2",
-                "4 fingers       =  Octave +3",
+                "Down / up flick =  Pluck (both strums work)",
                 "Pluck speed     =  Velocity",
+                "Finger count    =  Octave (latched at pluck)",
+                "Pinch (thumb)   =  Release note",
+                "Fist            =  Release note",
             ]),
         ]

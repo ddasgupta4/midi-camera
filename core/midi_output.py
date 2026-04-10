@@ -108,6 +108,20 @@ class MidiOutput:
         msg = [0xB0 | ch, cc_number, value]
         self.midi_out.send_message(msg)
 
+    def send_pitch_bend(self, value: int, channel: int | None = None):
+        """Send a MIDI pitch bend message.
+
+        value: -8192..+8191 (0 = center, no bend). 14-bit signed.
+        Default bend range on most synths is ±2 semitones.
+        """
+        if not self.connected or not self.midi_out:
+            return
+        ch = channel if channel is not None else self.channel
+        v = max(-8192, min(8191, int(value))) + 8192  # 0..16383
+        lsb = v & 0x7F
+        msb = (v >> 7) & 0x7F
+        self.midi_out.send_message([0xE0 | ch, lsb, msb])
+
     def all_notes_off(self):
         """Send note-off for all active notes."""
         if not self.connected or not self.midi_out:

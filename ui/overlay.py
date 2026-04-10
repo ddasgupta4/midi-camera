@@ -536,6 +536,237 @@ def draw_drum_card(frame, result: dict, key_display: str, mode_display: str, lef
                     cv2.FONT_HERSHEY_SIMPLEX, 0.50, (130, 130, 130), 1)
 
 
+def draw_theremin_overlay(frame, display: dict):
+    """In-scene theremin feedback: right-edge pitch ladder + top vibrato bar.
+
+    display: {'active','y','x','num_notes','vibrato','continuous','deadzone'}
+    """
+    if not display:
+        return
+    fh, fw = frame.shape[:2]
+
+    # ── Pitch ladder (right edge) ────────────────────────────────────────
+    pad = 14
+    lw = 34
+    lh = int(fh * 0.70)
+    lx = fw - lw - pad
+    ly = (fh - lh) // 2
+
+    draw_semi_transparent_rect(frame, lx, ly, lw, lh, (12, 12, 20), 0.72)
+    cv2.rectangle(frame, (lx, ly), (lx + lw, ly + lh), (90, 90, 90), 1)
+
+    # Tick marks for each scale note
+    num = max(1, int(display.get('num_notes', 14)))
+    for i in range(num):
+        # 0 = bottom, num-1 = top (matches y=wrist_y inversion in the mode)
+        frac = i / (num - 1)
+        ty_line = ly + int((1.0 - frac) * lh)
+        # Make "root" notes (every 7th starting at 0) brighter
+        is_root = (i % 7 == 0)
+        color = (130, 220, 255) if is_root else (70, 110, 150)
+        tick_w = 18 if is_root else 10
+        cv2.line(frame, (lx + 4, ty_line), (lx + 4 + tick_w, ty_line), color, 1 + int(is_root))
+
+    # Cursor = current smoothed wrist Y
+    if display.get('active'):
+        y = max(0.0, min(1.0, float(display.get('y', 0.5))))
+        cy = ly + int((1.0 - y) * lh)
+        cv2.circle(frame, (lx + lw // 2, cy), 6, (80, 255, 160), -1)
+        cv2.circle(frame, (lx + lw // 2, cy), 7, (15, 15, 15), 1)
+
+    # Mode label (continuous vs stepped)
+    mode_label = "SLIDE" if display.get('continuous') else "STEP"
+    cv2.putText(frame, mode_label, (lx - 4, ly - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 200, 255), 1)
+
+    # ── Vibrato bar (top center) ─────────────────────────────────────────
+    vb_w = 220
+    vb_h = 8
+    vb_x = (fw - vb_w) // 2
+    vb_y = 12
+
+    cv2.rectangle(frame, (vb_x, vb_y), (vb_x + vb_w, vb_y + vb_h), (35, 35, 45), -1)
+    cv2.rectangle(frame, (vb_x, vb_y), (vb_x + vb_w, vb_y + vb_h), (90, 90, 90), 1)
+    # Center tick
+    mid = vb_x + vb_w // 2
+    cv2.line(frame, (mid, vb_y - 2), (mid, vb_y + vb_h + 2), (150, 150, 150), 1)
+
+    vibrato = int(display.get('vibrato', 0))
+    if vibrato > 0:
+        half = vb_w // 2
+        # Symmetric fill from center; vibrato is 0..96 in theremin mode
+        fill = int(min(1.0, vibrato / 96.0) * half)
+        cv2.rectangle(frame, (mid - fill, vb_y), (mid + fill, vb_y + vb_h),
+                      (80, 200, 255), -1)
+    cv2.putText(frame, "VIBRATO", (vb_x - 80, vb_y + vb_h),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 180, 220), 1)
+
+
+def draw_guitar_overlay(frame, display: dict, right_landmarks=None):
+    """In-scene guitar feedback: pluck flash + cooldown ring around wrist."""
+    if not display or right_landmarks is None:
+        return
+    fh, fw = frame.shape[:2]
+
+    # Wrist is landmark 0. Landmarks are computed from the already-flipped
+    # frame, so coordinates are directly in display space.
+    try:
+        wx_norm, wy_norm = right_landmarks[0][0], right_landmarks[0][1]
+    except (IndexError, KeyError, TypeError):
+        return
+    wx = int(wx_norm * fw)
+    wy = int(wy_norm * fh)
+
+    flash_age = float(display.get('pluck_flash_age', 999.0))
+    if flash_age < 0.18:
+        alpha = max(0.0, 1.0 - flash_age / 0.18)
+        r = int(22 + 30 * alpha)
+        cv2.circle(frame, (wx, wy), r, (80, 255, 160), 2)
+        cv2.circle(frame, (wx, wy), 4, (80, 255, 160), -1)
+
+    # Cooldown ring — 0..1 progress, full = ready
+    cooldown = float(display.get('cooldown', 1.0))
+    if cooldown < 1.0:
+        # Draw an arc; OpenCV uses ellipse() for partial arcs
+        angle = int(cooldown * 360)
+        cv2.ellipse(frame, (wx, wy), (28, 28), -90, 0, angle,
+                    (100, 180, 255), 2)
+    else:
+        # Ready — faint full ring
+        cv2.circle(frame, (wx, wy), 28, (60, 120, 180), 1)
+
+    # Octave badge near wrist
+    oct_var = int(display.get('octave_variant', 0))
+    cv2.putText(frame, f"O{oct_var}", (wx + 34, wy + 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 220, 255), 1)
+
+
+def _zone_rect(fw: int, fh: int, row: int, col: int) -> tuple[int, int, int, int]:
+    """2×4 zone grid rectangle (x, y, w, h) covering the full frame."""
+    w = fw // 4
+    h = fh // 2
+    return col * w, row * h, w, h
+
+
+def draw_zone_grid_overlay(frame, zone_names: list, active_zones: list,
+                            flash_times: dict, hand_positions: dict, now: float):
+    """In-scene 2×4 drum zone grid with flash feedback."""
+    fh, fw = frame.shape[:2]
+    active_set = set(tuple(z) for z in (active_zones or []))
+
+    for row in range(2):
+        for col in range(4):
+            x, y, w, h = _zone_rect(fw, fh, row, col)
+            name = zone_names[row][col] if row < len(zone_names) and col < len(zone_names[row]) else ""
+
+            # Base cell — very faint translucent panel
+            draw_semi_transparent_rect(frame, x + 2, y + 2, w - 4, h - 4,
+                                       (20, 25, 35), 0.22)
+
+            border_color = (60, 70, 90)
+            thickness = 1
+
+            # Flash on recent hit
+            flash_t = flash_times.get((row, col)) if flash_times else None
+            if flash_t is not None:
+                age = now - flash_t
+                if age < 0.18:
+                    f_alpha = max(0.0, 1.0 - age / 0.18)
+                    # Brighter translucent fill
+                    draw_semi_transparent_rect(frame, x + 2, y + 2, w - 4, h - 4,
+                                               (60, 220, 140), 0.15 + 0.35 * f_alpha)
+                    border_color = (80, 255, 160)
+                    thickness = 2
+
+            # Active (hand currently in this cell)
+            if (row, col) in active_set:
+                border_color = (140, 220, 255)
+                thickness = max(thickness, 2)
+
+            cv2.rectangle(frame, (x + 2, y + 2), (x + w - 2, y + h - 2),
+                          border_color, thickness)
+
+            # Label
+            cv2.putText(frame, name, (x + 12, y + 26),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 220, 240), 1)
+
+    # Hand position crosshairs — wrist_x/y come from landmarks computed on
+    # the flipped frame, so they're already in display space.
+    for side, pos in (hand_positions or {}).items():
+        if not pos:
+            continue
+        hx, hy = pos
+        cx = int(hx * fw)
+        cy = int(hy * fh)
+        color = (80, 255, 160) if side == 'right' else (255, 180, 80)
+        cv2.drawMarker(frame, (cx, cy), color, cv2.MARKER_CROSS, 18, 2)
+
+
+def draw_strike_targets_overlay(frame, pads: dict, hand_positions: dict,
+                                 flash_times: dict, trails: dict, now: float):
+    """In-scene 2×2 strike targets per hand with motion trails + hit flashes."""
+    fh, fw = frame.shape[:2]
+
+    # For each hand, draw 4 target cells across the full frame (left/right split).
+    # The frame is flipped horizontally at display time, so the user's right
+    # hand appears on the LEFT half of the displayed frame.
+    for side, pads_map in (pads or {}).items():
+        for (row, col), drum_name in pads_map.items():
+            # Compute cell in normalized (0..1) space and convert to pixels
+            # with horizontal flip (display mirrors x).
+            cell_w = fw // 2
+            cell_h = fh // 2
+            x = col * cell_w
+            y = row * cell_h
+
+            border_color = (60, 80, 100)
+            thickness = 1
+
+            flash_t = flash_times.get((side[0].upper(), row, col)) if flash_times else None
+            if flash_t is not None:
+                age = now - flash_t
+                if age < 0.18:
+                    f_alpha = max(0.0, 1.0 - age / 0.18)
+                    color = (80, 200, 255) if side == 'right' else (255, 180, 100)
+                    draw_semi_transparent_rect(frame, x + 3, y + 3, cell_w - 6, cell_h - 6,
+                                               color, 0.15 + 0.30 * f_alpha)
+                    border_color = color
+                    thickness = 2
+
+            cv2.rectangle(frame, (x + 3, y + 3), (x + cell_w - 3, y + cell_h - 3),
+                          border_color, thickness)
+            # Label — color-tagged per hand
+            label_color = (200, 220, 255) if side == 'right' else (255, 210, 160)
+            cv2.putText(frame, f"{side[0].upper()}:{drum_name}", (x + 14, y + 26),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, label_color, 1)
+
+    # Motion trails (last ~200 ms, fading). Positions are already in
+    # display coordinates (landmarks computed on the flipped frame).
+    for side, trail in (trails or {}).items():
+        if not trail:
+            continue
+        trail_color = (80, 255, 160) if side == 'right' else (255, 180, 80)
+        for (tx, ty, tt) in trail:
+            age = now - tt
+            if age > 0.2:
+                continue
+            alpha = max(0.0, 1.0 - age / 0.2)
+            px = int(tx * fw)
+            py = int(ty * fh)
+            radius = int(2 + 4 * alpha)
+            cv2.circle(frame, (px, py), radius, trail_color, -1)
+
+    # Current position crosshair
+    for side, pos in (hand_positions or {}).items():
+        if not pos:
+            continue
+        hx, hy = pos
+        cx = int(hx * fw)
+        cy = int(hy * fh)
+        color = (80, 255, 160) if side == 'right' else (255, 180, 80)
+        cv2.drawMarker(frame, (cx, cy), color, cv2.MARKER_CROSS, 22, 2)
+
+
 def draw_bass_pedal_panel(frame, bp):
     """Bass note & pedal tones panel — press P to toggle."""
     fh, fw = frame.shape[:2]

@@ -87,14 +87,19 @@
 
 | Hand | Gesture | Effect |
 |---|---|---|
-| Right | Y position | Pitch (top=high, bottom=low, quantized to scale) |
-| Right | X position | Vibrato (CC1 mod wheel, edges=more) |
+| Right | Y position | Pitch (top=high, bottom=low, smoothed + quantized to scale) |
+| Right | X position | Vibrato (CC1 mod wheel). Center 30% = deadzone. |
+| Right | Wrist height | Velocity (high = loud) |
 | Right | Fist | Silence |
 | Right | Any fingers | Enable pitch tracking |
 | Left | 0-4 fingers | Octave offset +0 to +4 |
 | Left | Thumb out | Sustain |
+| Key `C` | — | Toggle continuous (pitch-bend glissando) mode |
 
-2 octaves of scale notes, quantized.
+3 octaves of scale notes. Positions are EMA-smoothed to kill hand tremor.
+In continuous mode, MIDI pitch bend fills in between scale notes for a true
+theremin slide. In-scene overlay: right-edge pitch ladder shows your current
+position; top-center bar shows vibrato depth.
 
 ---
 
@@ -105,10 +110,14 @@
 | Left | 1-5 fingers | Scale degree 1-5 |
 | Left | Thumb only | Scale degree 6 |
 | Left | Thumb + pinky | Scale degree 7 |
-| Right | Downward flick | Pluck / trigger note |
-| Right | Fist | Mute / note off |
-| Right | 1-4 fingers (while held) | Octave 0 to +3 |
-| Right | Pluck speed | Velocity |
+| Right | Down flick | Pluck / trigger note (down-strum) |
+| Right | Up flick | Pluck / trigger note (up-strum) |
+| Right | 1-4 fingers **at pluck time** | Octave 0 to +3 (latched — you don't need to hold) |
+| Right | Pinch (thumb + index touch) | Release note |
+| Right | Fist | Release note |
+| Right | Pluck speed | Velocity (time-normalized, frame-rate independent) |
+
+In-scene overlay: pluck flash + cooldown ring at wrist.
 
 ---
 
@@ -155,18 +164,37 @@ Screen grid (2x4):
 +----------+----------+----------+----------+
 ```
 
-Move hand into zone = trigger. Hand speed = velocity. Both hands tracked independently.
+**Trigger**: moving into a new zone OR striking down within the same zone
+(so you can repeatedly hit a kick without leaving the cell).
+**Velocity**: downward component of wrist velocity (rewards striking force,
+not lateral drift).
+**Decay**: notes release after ~80 ms — drums don't sustain.
+**Overlay**: grid is drawn directly on the camera view with per-cell hit
+flashes and live crosshairs at each wrist.
 
 ---
 
 ## Mode 9 — Drums Strike
 
-| Hand | Left half (X < 0.5) | Right half (X > 0.5) |
-|---|---|---|
-| Right | Kick (36) | Snare (38) |
-| Left | Closed Hat (42) | Crash (49) |
+8 pads total (4 per hand), picked by wrist (x, y) at the moment of impact:
 
-Strike down (fast wrist drop) = hit. Strike speed = velocity.
+```
+Right hand                  Left hand
++-----------+-----------+   +-----------+-----------+
+| RIDE (51) | CRASH(49) |   |OP-HAT(46) |SPLASH(55) |
++-----------+-----------+   +-----------+-----------+
+| KICK (36) | SNARE(38) |   |CH-HAT(42) | TOM  (45) |
++-----------+-----------+   +-----------+-----------+
+```
+
+**Trigger**: fast downward wrist velocity (time-normalized, frame-rate
+independent).
+**Reset gate**: after a strike, the wrist must rise back above the strike
+point before another strike is allowed — prevents vertical oscillation from
+double-triggering.
+**Velocity**: strike speed.
+**Overlay**: target rectangles drawn on the camera view, fading motion
+trails show your strike arc, and cells flash on hit.
 
 ---
 
