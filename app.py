@@ -369,8 +369,12 @@ class DegradationMonitor:
         else:
             self._fast_count += 1
             self._behind_count = max(0, self._behind_count - 1)
-            if self._fast_count >= self.RECOVER_THRESHOLD and self._degraded_tier is not None:
-                self._recover()
+            if self._fast_count >= self.RECOVER_THRESHOLD:
+                if self._degraded_tier is not None:
+                    self._recover()
+                elif self._face_skip_boost > 0:
+                    self._face_skip_boost = max(0, self._face_skip_boost - 2)
+                    print(f"[perf] face skip recovering → {self.effective_face_skip}")
                 self._fast_count = 0
 
     def _degrade(self):
@@ -492,7 +496,8 @@ def run_camera(config: dict):
         sauce_from_face = None
         if face and mode.supports_sauce:
             face.frame_skip = degradation.effective_face_skip
-            sauce_from_face = face.process(frame)
+            face.submit_frame(frame)
+            sauce_from_face = face.get_result()
 
         # Read latest hand results (non-blocking)
         left_hand, right_hand = tracker.get_result()

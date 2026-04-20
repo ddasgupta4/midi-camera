@@ -2,17 +2,20 @@
 MediaPipe Face Landmarker — detects tongue-out for "sauce mode."
 
 Uses blendshape scores from the FaceLandmarker Tasks API.
-Supports frame skipping to reduce CPU load (heaviest model).
+Runs inference in a background thread (same pattern as HandTracker)
+to avoid blocking the main loop.
 """
 
 import os
 import time
+import threading
 import cv2
 import numpy as np
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from collections import deque
+from typing import Optional
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'models', 'face_landmarker.task')
 
@@ -65,6 +68,17 @@ class FaceTracker:
         self._inference_fps = 0.0
         self._fps_timer = time.time()
 
+        # Threading state (same pattern as HandTracker)
+        self._lock = threading.Lock()
+        self._frame_slot: Optional[np.ndarray] = None
+        self._result: bool = False  # cached sauce_on state
+        self._running = True
+        self._has_frame = threading.Event()
+
+        # Start inference thread
+        self._thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self._thread.start()
+
     @property
     def frame_skip(self) -> int:
         return self._frame_skip
@@ -77,16 +91,41 @@ class FaceTracker:
     def inference_fps(self) -> float:
         return self._inference_fps
 
-    def process(self, frame: np.ndarray) -> bool:
-        """
-        Process a BGR frame. Returns True if sauce mode is on.
-        Skips inference on non-Nth frames, returning cached result.
-        """
+    def submit_frame(self, frame: np.ndarray):
+        """Submit a new frame for face inference (non-blocking, drops old frames).
+        Handles frame skipping — caller doesn't need to count."""
         self._frame_counter += 1
         if self._frame_counter % self._frame_skip != 0:
-            return self._sauce_on
+            return
+        with self._lock:
+            self._frame_slot = frame
+        self._has_frame.set()
 
-        # Run actual inference
+    def get_result(self) -> bool:
+        """Get latest sauce_on state (non-blocking)."""
+        with self._lock:
+            return self._result
+
+    def _inference_loop(self):
+        """Background thread: process frames as they arrive."""
+        while self._running:
+            self._has_frame.wait(timeout=0.1)
+            self._has_frame.clear()
+
+            with self._lock:
+                frame = self._frame_slot
+                self._frame_slot = None
+
+            if frame is None:
+                continue
+
+            sauce_on = self._run_inference(frame)
+
+            with self._lock:
+                self._result = sauce_on
+
+    def _run_inference(self, frame: np.ndarray) -> bool:
+        """Run face inference and toggle logic. Returns sauce_on state."""
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         timestamp_ms = int((time.time() - self._start_time) * 1000)
@@ -140,4 +179,7 @@ class FaceTracker:
         return true_count / len(self._mouth_history) >= 0.70
 
     def release(self):
+        self._running = False
+        self._has_frame.set()  # unblock thread
+        self._thread.join(timeout=1.0)
         self.landmarker.close()
